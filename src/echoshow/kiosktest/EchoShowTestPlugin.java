@@ -51,17 +51,31 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile boolean verlaufCache = true;
 
     // presence data (worker thread writes, views read immutable snapshots)
-    private String personenAboFuer;                    // template of the active people subscription
+    private String personenAboFuer;                    // template of the people subscription (to notice setting changes)
     private volatile List<Anwesenheit.Person> personenCache;
     private volatile Map<String, List<Anwesenheit.Eintrag>> verlaufCacheDaten;
     private volatile String verlaufCacheKey;
     private volatile long verlaufCacheZeit;
     private volatile boolean verlaufNurWechsel;        // set once HA's answer was too large for the 32 KB limit
 
-    // subscription state (worker thread)
-    private String aboFuer;
-    private int aboVersuche;
+    // subscriptions that resubscribe themselves with a backoff (after an HA restart HA refuses them for a while)
+    Dauerabo.Zeitgeber zeitgeber = new Dauerabo.Zeitgeber() {
+        @Override public Object spaeter(Runnable r, long ms) {
+            Runnable sicher = () -> TestAnsicht.sicher(r);
+            main().postDelayed(sicher, ms);
+            return sicher;
+        }
+        @Override public void abbrechen(Object handle) { main().removeCallbacks((Runnable) handle); }
+    };
+    private final Dauerabo.Zeitgeber zeit = new Dauerabo.Zeitgeber() {   // follows zeitgeber (tests replace it)
+        @Override public Object spaeter(Runnable r, long ms) { return zeitgeber.spaeter(r, ms); }
+        @Override public void abbrechen(Object handle) { zeitgeber.abbrechen(handle); }
+    };
+    private final Dauerabo.Melder melder = (abo, text, fehler) -> aboZustand(abo, text, fehler);
+    private final Dauerabo aboAnsicht = new Dauerabo(ABO, zeit, melder);
+    private final Dauerabo aboPersonen = new Dauerabo(PERSONEN, zeit, melder);
     private volatile String aboStatus = "Abo aus";
+    private volatile boolean aboFehler;
 
     private TestAnsicht aktuell;                        // guarded by this
     private final LinkedList<String> verlauf = new LinkedList<>();   // guarded by this
@@ -126,7 +140,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     @Override public void stop() {
         host = null;   // KS has revoked the host and removes the overlay itself
         synchronized (this) { aktuell = null; }
-        aboFuer = null;
+        aboAnsicht.stop();
+        aboPersonen.stop();
         personenAboFuer = null;
     }
 
@@ -136,34 +151,33 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         PluginHost h = host;
         if (h == null) return;
         String soll = abo && !h.isHeadless() ? dashboard : null;
-        if (soll == null ? aboFuer == null : soll.equals(aboFuer)) return;
-        try { h.haUnsubscribe(ABO); } catch (RuntimeException ignored) {}
-        aboFuer = null;
-        aboStatus = "Abo aus";
-        if (soll != null) abonnieren(h, soll);
+        Map<String, Object> msg = null;
+        if (soll != null) {
+            msg = new LinkedHashMap<>();
+            msg.put("type", "echo_show/ansicht/abo");
+            msg.put("dashboard", soll);
+        }
+        if (soll == null) {
+            aboStatus = "Abo aus";
+            aboFehler = false;
+        } else if (!aboAnsicht.aktiv() && !aboFehler) {
+            aboStatus = "Abo wird angemeldet (" + soll + ")";
+        }
+        aboAnsicht.setzen(h, msg, soll);
     }
 
-    private void abonnieren(PluginHost h, String dash) {
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("type", "echo_show/ansicht/abo");
-        msg.put("dashboard", dash);
-        aboFuer = dash;
-        aboStatus = "Abo wird angemeldet (" + dash + ")";
-        try {
-            h.haSubscribe(ABO, msg, (ok, data, error) -> {
-                if (!dash.equals(aboFuer)) return;
-                if (ok) {
-                    aboVersuche = 0;
-                    aboStatus = "Abo aktiv (" + dash + ")";
-                } else {
-                    aboFuer = null;
-                    aboStatus = "Abo abgelehnt: " + error;
-                }
-                status();
-            });
-        } catch (RuntimeException e) {
-            aboFuer = null;
-            aboStatus = "Abo nicht möglich: " + e.getMessage();
+    /** State reports of the self-healing subscriptions (any thread). */
+    private void aboZustand(Dauerabo abo, String text, boolean fehler) {
+        if (abo == aboAnsicht) {
+            aboStatus = "Abo " + text + " (" + dashboard + ")";
+            aboFehler = fehler;
+            status();
+        } else {
+            if (fehler && abo == aboPersonen) personenFehler("Personen nicht lesbar: " + text);
+            PluginHost h = host;
+            if (h != null) {
+                try { h.log(abo.key + ": " + text); } catch (RuntimeException ignored) {}
+            }
         }
     }
 
@@ -184,17 +198,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 for (Map.Entry<?, ?> x : ((Map<?, ?>) e.get("param")).entrySet()) param.put(String.valueOf(x.getKey()), x.getValue());
             }
             oeffnen(name, (String) token, Boolean.TRUE.equals(e.get("kalt")), param, "HA");
-        } else if ("disconnected".equals(typ)) {
-            aboStatus = "Abo: Verbindung getrennt, KS verbindet neu";
-            status();
-        } else if ("resubscribed".equals(typ)) {
-            aboStatus = "Abo aktiv (" + aboFuer + ", neu verbunden)";
-            status();
-        } else if ("ended".equals(typ)) {
-            aboFuer = null;
-            aboStatus = "Abo beendet: " + p.get("error");
-            if (aboVersuche++ < 3) aboAbgleichen();
-            status();
+        } else {
+            aboAnsicht.ereignis(p);   // ended -> resubscribes with a backoff; resubscribed / disconnected -> state
         }
     }
 
@@ -274,34 +279,21 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (h == null) return;
         Map<String, Object> msg = h.isHeadless() ? null : Anwesenheit.personenAbo(Anwesenheit.ids(personen));
         String soll = msg == null ? null : (String) msg.get("template");
-        if (soll == null ? personenAboFuer == null : soll.equals(personenAboFuer)) return;
-        try { h.haUnsubscribe(PERSONEN); } catch (RuntimeException ignored) {}
-        personenAboFuer = null;
-        personenCache = null;
-        verlaufCacheDaten = null;
-        if (msg == null) return;
-        personenAboFuer = soll;
-        try {
-            h.haSubscribe(PERSONEN, msg, (ok, data, error) -> {
-                if (!ok && soll.equals(personenAboFuer)) {
-                    personenAboFuer = null;
-                    personenFehler("Personen nicht lesbar: " + error);
-                }
-            });
-        } catch (RuntimeException e) {
-            personenAboFuer = null;
-            personenFehler("Personen nicht lesbar: " + e.getMessage());
+        if (!(soll == null ? personenAboFuer == null : soll.equals(personenAboFuer))) {
+            personenCache = null;   // other people: the cached data no longer fits
+            verlaufCacheDaten = null;
         }
+        personenAboFuer = soll;
+        aboPersonen.setzen(h, msg, soll);
     }
 
     private void personenEreignis(Map<String, Object> p) {
         Object typ = p.get("type");
-        if ("ended".equals(typ)) {
-            personenAboFuer = null;
-            personenAbgleichen();
+        if (!"event".equals(typ)) {
+            aboPersonen.ereignis(p);   // ended -> resubscribes with a backoff
             return;
         }
-        if (!"event".equals(typ) || !(p.get("event") instanceof Map)) return;
+        if (!(p.get("event") instanceof Map)) return;
         Map<?, ?> ev = (Map<?, ?>) p.get("event");
         if (ev.containsKey("error")) {
             personenFehler("Vorlage: " + ev.get("error"));
@@ -344,10 +336,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private void anwesenheitLaden(TestAnsicht a) {
         Messung m = a.m;
         List<Anwesenheit.Person> ps = personenCache;
-        if (ps == null) {
-            if (personenAboFuer == null) personenAbgleichen();   // e.g. after a failed subscription
-            return;   // personenEreignis continues once HA sends the people
-        }
+        if (ps == null) return;   // personenEreignis continues once HA sends the people (the subscription retries itself)
         m.personen = ps;
         m.personenAusCache = true;
         verlaufHolen(a);
@@ -597,7 +586,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         String s = sb.length() > 1000 ? sb.substring(0, 1000) : sb.toString();
         try {
-            h.status(s, aboStatus.startsWith("Abo abgelehnt") || aboStatus.startsWith("Abo nicht"));
+            h.status(s, aboFehler);
         } catch (RuntimeException ignored) {
             // older KS or ended session
         }
