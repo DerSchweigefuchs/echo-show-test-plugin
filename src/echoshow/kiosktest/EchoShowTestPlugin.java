@@ -34,7 +34,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     static final String OVERLAY = "ansicht";
     static final String ABO = "ansicht_abo";
     static final String PERSONEN = "anw_personen";
-    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit"};
+    static final String WETTER = "wx_daten";
+    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit", "wetter"};
     private static final long VERLAUF_GUELTIG = 300_000L;   // like the dashboard page: reload after 5 minutes
 
     private volatile PluginHost host;
@@ -49,6 +50,13 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile String uebergang = "keine";
     private volatile String personen = "alle";
     private volatile boolean verlaufCache = true;
+    private volatile String wetterEntity = "";
+    private volatile boolean sternbildNamen = true;
+    private volatile int wetterFps = 30;
+
+    // weather data (live render_template), screensaver / screen for the scene's pause
+    private volatile WetterLage.Daten wetterDaten;
+    private volatile boolean schonerAktiv, bildschirmAus;
 
     // presence data (worker thread writes, views read immutable snapshots)
     private String personenAboFuer;                    // template of the people subscription (to notice setting changes)
@@ -74,6 +82,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo.Melder melder = (abo, text, fehler) -> aboZustand(abo, text, fehler);
     private final Dauerabo aboAnsicht = new Dauerabo(ABO, zeit, melder);
     private final Dauerabo aboPersonen = new Dauerabo(PERSONEN, zeit, melder);
+    private final Dauerabo aboWetter = new Dauerabo(WETTER, zeit, melder);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
 
@@ -99,6 +108,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         verlaufCache = !Boolean.FALSE.equals(s.get("verlaufCache"));
         aboAbgleichen();
         personenAbgleichen();
+        wetterEntity = text(s.get("wetterEntity"), "");
+        sternbildNamen = !Boolean.FALSE.equals(s.get("sternbildNamen"));
+        wetterFps = "24".equals(s.get("wetterFps")) ? 24 : 30;
+        wetterAbgleichen();
         status();
     }
 
@@ -109,7 +122,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 String name = args.isEmpty() ? "kalender" : ansicht(args.get(0));
                 if (name == null) {
                     PluginHost h = host;
-                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit", true);
+                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit, wetter", true);
                     return;
                 }
                 oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.get(1) : null), "Befehl");
@@ -119,6 +132,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             case "timer":
             case "liste":
             case "anwesenheit":
+            case "wetter":
                 oeffnen(command, null, false, Collections.<String, Object>emptyMap(), "Befehl");
                 return;
             case "schliessen":
@@ -132,6 +146,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     @Override public void onEvent(String event, Map<String, Object> payload) {
         if (("ks.ha.subscription." + ABO).equals(event)) aboEreignis(payload);
         else if (("ks.ha.subscription." + PERSONEN).equals(event)) personenEreignis(payload);
+        else if (("ks.ha.subscription." + WETTER).equals(event)) wetterEreignis(payload);
+        else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
+            if ("ks.screensaver.state".equals(event)) schonerAktiv = Boolean.TRUE.equals(payload.get("active"));
+            else bildschirmAus = Boolean.FALSE.equals(payload.get("on"));
+            TestAnsicht a;
+            synchronized (this) { a = aktuell; }
+            if (a != null) main().post(() -> TestAnsicht.sicher(a::pauseGeaendert));
+        }
         else if ("overlay.closed".equals(event) && OVERLAY.equals(payload.get("key"))) {
             synchronized (this) { aktuell = null; }   // back gesture; the view's onDestroy records the result
         }
@@ -142,6 +164,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         synchronized (this) { aktuell = null; }
         aboAnsicht.stop();
         aboPersonen.stop();
+        aboWetter.stop();
+        main().post(WetterView::freigeben);   // drop the kept weather layers
         personenAboFuer = null;
     }
 
@@ -222,6 +246,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         ramLesen(m, true, a);
         if ("kalender".equals(ansicht)) kalenderLaden(h, a);
         else if ("anwesenheit".equals(ansicht)) anwesenheitLaden(a);
+        else if ("wetter".equals(ansicht)) {
+            WetterLage.Daten wd = wetterDaten;
+            if (wd != null) {
+                m.wetter = wd;
+                m.wetterAusCache = true;
+                m.tDaten = SystemClock.uptimeMillis();
+            }   // otherwise wetterEreignis fills it in as soon as HA sends the first result
+        }
         try {
             h.showOverlay(OVERLAY, spec(), a);
         } catch (RuntimeException e) {   // older KS, rate limit or stopped session
@@ -415,6 +447,54 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
     }
 
+    // ---- weather: live data and the scene's pause ------------------------------------------------------------------
+
+    /** One render_template subscription for the weather entity, sun.sun and zone.home; it stays up while the plugin runs. */
+    private void wetterAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        Map<String, Object> msg = h.isHeadless() ? null : WetterLage.abo(wetterEntity);
+        String soll = msg == null ? null : (String) msg.get("template");
+        aboWetter.setzen(h, msg, soll);
+        if (h.isHeadless()) return;
+        try {   // pause the scene under the screensaver and with the screen off
+            h.subscribe("screensaver.state");
+            h.subscribe("screen.state");
+        } catch (RuntimeException ignored) {
+            // without host.read the scene only pauses when its view is hidden
+        }
+    }
+
+    private void wetterEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboWetter.ereignis(p);   // ended -> resubscribes with a backoff
+            return;
+        }
+        if (!(p.get("event") instanceof Map)) return;
+        Map<?, ?> ev = (Map<?, ?>) p.get("event");
+        if (!ev.containsKey("result")) return;
+        WetterLage.Daten d;
+        try {
+            d = WetterLage.lesen(ev.get("result"), Json::lesen);
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (d == null) return;
+        wetterDaten = d;
+        TestAnsicht a;
+        synchronized (this) { a = aktuell != null && "wetter".equals(aktuell.m.ansicht) ? aktuell : null; }
+        if (a == null) return;
+        a.m.wetter = d;
+        if (a.m.tDaten == 0) a.m.tDaten = SystemClock.uptimeMillis();
+        main().post(() -> TestAnsicht.sicher(a::datenDa));
+    }
+
+    boolean wetterPausiert() { return schonerAktiv || bildschirmAus; }
+
+    boolean sternbildNamen() { return sternbildNamen; }
+
+    int wetterFps() { return wetterFps; }
+
     /** Main thread: the view is on screen (first draw + two frames). */
     void sichtbar(TestAnsicht a) {
         Messung m = a.m;
@@ -441,6 +521,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             if (m.datenFehler != null) d.put("fehler", m.datenFehler);
         }
         if ("kalender".equals(m.ansicht)) d.put("termine", m.termine == null ? 0 : m.termine.size());
+        if ("wetter".equals(m.ansicht)) {
+            WetterLage.Daten wd = m.wetter;
+            d.put("zustand", wd == null ? "" : wd.zustand);
+            d.put("daten_cache", m.wetterAusCache);
+            d.put("aufbau_ms", m.aufbauMs);
+            Object mo = m.param.get("modus"), uhr = m.param.get("uhr");
+            d.put("modus", mo != null ? String.valueOf(mo) : (uhr != null ? "fest " + uhr : "live"));
+        }
         if ("anwesenheit".equals(m.ansicht)) {
             List<Anwesenheit.Person> ps = m.personen;
             d.put("personen", ps == null ? 0 : ps.size());
@@ -615,6 +703,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         String a = arg.trim();
         if ("timer".equals(ansicht) && a.matches("\\d{1,5}")) p.put("sekunden", Integer.parseInt(a));
         else if ("kalender".equals(ansicht) && Kalender.TAG.matcher(a).matches()) p.put("tag", a);
+        else if ("wetter".equals(ansicht) && "zeitraffer".equals(a)) p.put("modus", "zeitraffer");
+        else if ("wetter".equals(ansicht) && a.matches("([01]?\\d|2[0-3]):[0-5]\\d")) p.put("uhr", a);
         return p;
     }
 

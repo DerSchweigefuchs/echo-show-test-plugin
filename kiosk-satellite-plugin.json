@@ -3,11 +3,11 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: vier native Vollbild-Testansichten (Kalender-Tagesliste, Timer-Countdown, Liste mit 50 Zeilen, Anwesenheit mit Tages- und Wochenverlauf), um native Android-Views mit Lovelace-Ebenen zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
+  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer), um native Android-Views mit Lovelace-Seiten zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit, test-wetter). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [
@@ -82,6 +82,34 @@
       "description": "Wie die Lovelace-Seite: Der 7-Tage-Verlauf wird nur neu geladen, wenn jemand kommt oder geht oder er älter als 5 Minuten ist. Aus: bei jedem Öffnen neu laden."
     },
     {
+      "key": "wetterEntity",
+      "type": "string",
+      "title": "Wetter-Entität",
+      "default": "",
+      "group": "Wetter-Test",
+      "description": "weather-Entität für die Szene. Leer: die erste weather-Entität. Sonne aus sun.sun, Mond und Sterne aus zone.home, alles nur lesend und nur zur Laufzeit."
+    },
+    {
+      "key": "sternbildNamen",
+      "type": "boolean",
+      "title": "Sternbilder beschriften",
+      "default": true,
+      "group": "Wetter-Test",
+      "description": "Namen der Sternbilder am Nachthimmel zeigen."
+    },
+    {
+      "key": "wetterFps",
+      "type": "select",
+      "title": "Bildrate der Szene",
+      "default": "30",
+      "options": [
+        "30",
+        "24"
+      ],
+      "group": "Wetter-Test",
+      "description": "Ziel-Bildrate der Wetterszene. Sie pausiert ganz, solange sie nicht sichtbar ist."
+    },
+    {
       "key": "uebergang",
       "type": "select",
       "title": "Übergang beim Öffnen",
@@ -99,7 +127,7 @@
   "commands": [
     {
       "id": "zeigen",
-      "title": "Ansicht zeigen (Link-Argument: kalender, timer, liste oder anwesenheit)"
+      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter)"
     },
     {
       "id": "kalender",
@@ -116,6 +144,10 @@
     {
       "id": "anwesenheit",
       "title": "Anwesenheit-Test zeigen"
+    },
+    {
+      "id": "wetter",
+      "title": "Wetter-Szene zeigen (Link: wetter/zeitraffer oder wetter/HH:MM)"
     },
     {
       "id": "schliessen",

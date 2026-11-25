@@ -68,7 +68,13 @@ final class TestAnsicht implements OverlayFactory {
     void datenDa() {
         if (aktiv == null) return;
         if (aktiv.anwView != null) aktiv.anwFuellen();
+        else if (aktiv.wetterView != null) aktiv.wetterFuellen();
         else aktiv.kalenderFuellen();
+    }
+
+    /** Main thread: screensaver or screen changed (the weather scene pauses). */
+    void pauseGeaendert() {
+        if (aktiv != null) aktiv.wetterPause();
     }
 
     /** Main thread: the RAM reading after opening arrived. */
@@ -95,6 +101,7 @@ final class TestAnsicht implements OverlayFactory {
         TextView zeitLabel, framesLabel;
         LinearLayout kalenderListe;
         AnwesenheitView anwView;
+        WetterView wetterView;
         String messZeit = "", messFrames = "";
         ScrollView scroll;
         ObjectAnimator autoScroll;
@@ -117,10 +124,11 @@ final class TestAnsicht implements OverlayFactory {
             root.setBackgroundColor(th.color("surface"));
             root.setClickable(true);   // touches stay in the test view
             // the presence page brings its own header (back button, title, switch), like the dashboard page it copies
-            if (!"anwesenheit".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
+            else if ("wetter".equals(m.ansicht)) wetter(inhalt);
             else if ("timer".equals(m.ansicht)) timer(inhalt);
             else if ("liste".equals(m.ansicht)) liste(inhalt);
             else kalender(inhalt);
@@ -213,12 +221,13 @@ final class TestAnsicht implements OverlayFactory {
                 case "timer": return "Timer (nativ)";
                 case "liste": return "Liste 50 (nativ)";
                 case "anwesenheit": return "Anwesenheit (nativ)";
+                case "wetter": return "Wetter (nativ)";
                 default: return "Kalender (nativ)";
             }
         }
 
         void zeitText() {
-            if (zeitLabel == null && anwView == null) return;
+            if (zeitLabel == null && anwView == null && wetterView == null) return;
             StringBuilder sb = new StringBuilder();
             if (m.tInhalt > 0) {
                 sb.append("offen in ").append(m.ms(m.tInhalt)).append(" ms");
@@ -236,6 +245,7 @@ final class TestAnsicht implements OverlayFactory {
             messZeit = sb.toString();
             if (zeitLabel != null) zeitLabel.setText(messZeit);
             if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
+            if (wetterView != null) wetterView.mess("nativ · " + messZeit, "Hauptthread " + messFrames);
         }
 
         private void framesText() {
@@ -244,6 +254,35 @@ final class TestAnsicht implements OverlayFactory {
                 zaehler.fps, zaehler.ruckler, zaehler.frames, zaehler.maxNs / 1_000_000L);
             if (framesLabel != null) framesLabel.setText(messFrames);
             if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
+            if (wetterView != null) wetterView.mess("nativ · " + messZeit, "Hauptthread " + messFrames);
+        }
+
+        // ---- (e) weather scene ---------------------------------------------------------------------------------
+
+        private void wetter(FrameLayout inhalt) {
+            Object mo = m.param == null ? null : m.param.get("modus"), uhr = m.param == null ? null : m.param.get("uhr");
+            wetterView = new WetterView(ctx, new WetterView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public boolean pausiert() { return plugin.wetterPausiert(); }
+                @Override public void fertig(long aufbauMs) {
+                    m.aufbauMs = aufbauMs;
+                    if (gefuellt) return;
+                    gefuellt = true;
+                    if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+                }
+            }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
+            inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            wetterFuellen();
+        }
+
+        void wetterFuellen() {
+            if (zerstoert || wetterView == null) return;
+            if (m.wetter != null) wetterView.setDaten(m.wetter);
+        }
+
+        /** Main thread: screensaver or screen changed. */
+        void wetterPause() {
+            if (wetterView != null) wetterView.pauseGeaendert();
         }
 
         // ---- (d) presence -------------------------------------------------------------------------------------

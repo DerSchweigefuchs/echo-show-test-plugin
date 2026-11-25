@@ -162,7 +162,7 @@ final class Anwesenheit {
     }
 
     /** ISO 8601 timestamp of the long history form, or 0. */
-    private static long zeit(Object iso) {
+    static long zeit(Object iso) {
         if (!(iso instanceof String)) return 0;
         String s = (String) iso;
         try {
