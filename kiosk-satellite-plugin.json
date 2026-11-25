@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "echo-show-test",
+  "name": "Echo Show Test-Ansichten",
+  "version": "0.1.1",
+  "minAndroidSdk": 24,
+  "minAppVersion": "2026.11.16",
+  "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
+  "description": "Prototyp: drei native Vollbild-Testansichten (Kalender-Tagesliste, Timer-Countdown, Liste mit 50 Zeilen), um native Android-Views mit Lovelace-Ebenen zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events).",
+  "author": "Echo Show Projekt",
+  "license": "Apache-2.0",
+  "capabilities": ["overlay", "ha", "host.read"],
+  "settings": [
+    {
+      "key": "abo",
+      "type": "boolean",
+      "title": "Auf Ansicht-Anfragen hören",
+      "default": true,
+      "group": "Home Assistant",
+      "description": "Abonniert echo_show/ansicht/abo und öffnet nur die Seiten test-kalender, test-timer und test-liste. Alle anderen Seiten werden ignoriert."
+    },
+    {
+      "key": "dashboard",
+      "type": "string",
+      "title": "Dashboard-Pfad",
+      "default": "/echo-show/",
+      "group": "Home Assistant",
+      "description": "Dashboard, für das die Ansicht-Anfragen kommen."
+    },
+    {
+      "key": "kalender",
+      "type": "string",
+      "title": "Kalender",
+      "default": "all",
+      "group": "Kalender-Test",
+      "description": "Kalender-Entitäten, mit Komma getrennt, oder all für alle. Gelesen wird nur mit calendar.get_events."
+    },
+    {
+      "key": "timerSekunden",
+      "type": "number",
+      "title": "Timer-Dauer",
+      "default": 300,
+      "min": 5,
+      "max": 3600,
+      "step": 5,
+      "unit": "s",
+      "input": "field",
+      "group": "Timer-Test",
+      "description": "Startwert des Test-Countdowns. Ein Link-Argument wie /zeigen/timer/90 überschreibt ihn."
+    },
+    {
+      "key": "timerModus",
+      "type": "select",
+      "title": "Timer-Animation",
+      "default": "sekündlich",
+      "options": ["sekündlich", "flüssig"],
+      "group": "Timer-Test",
+      "description": "sekündlich: Ring und Ziffern springen jede Sekunde. flüssig: der Ring läuft mit jedem Frame (Lasttest)."
+    },
+    {
+      "key": "uebergang",
+      "type": "select",
+      "title": "Übergang beim Öffnen",
+      "default": "keine",
+      "options": ["keine", "fade", "slide", "scale"],
+      "group": "Darstellung",
+      "description": "Für faire Zeitmessung: keine. Die Lovelace-Ebenen erscheinen ebenfalls ohne Übergang."
+    }
+  ],
+  "commands": [
+    { "id": "zeigen", "title": "Ansicht zeigen (Link-Argument: kalender, timer oder liste)" },
+    { "id": "kalender", "title": "Kalender-Test zeigen" },
+    { "id": "timer", "title": "Timer-Test zeigen" },
+    { "id": "liste", "title": "Listen-Test zeigen" },
+    { "id": "schliessen", "title": "Test-Ansicht schließen" }
+  ]
+}

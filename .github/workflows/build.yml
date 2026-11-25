@@ -1,0 +1,45 @@
+name: Release
+# Builds the plugin on GitHub so Kiosk Satellite accepts the release (assets must be uploaded by github-actions[bot]).
+# A pushed tag v<version> creates the release itself (a deploy key can push tags but cannot create releases).
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the release for a pushed tag
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Build von $GITHUB_REF_NAME"
+      - name: Validate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_TYPE" = tag || { echo 'Run this workflow on a release tag, not a branch.'; exit 1; }
+          gh release view "$GITHUB_REF_NAME"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build
+        run: python3 tools/build.py --android-platform 35 --version "${GITHUB_REF_NAME#v}"
+      - name: Attach plugin assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/*.zip \
+            dist/*.zip.sha256 \
+            dist/kiosk-satellite-plugin.json --clobber
