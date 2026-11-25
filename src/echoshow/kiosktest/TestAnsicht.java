@@ -165,7 +165,10 @@ final class TestAnsicht implements OverlayFactory {
             zaehler.reset();   // jank counts from here on, not the opening itself
             if (m.tSichtbar == 0) m.tSichtbar = SystemClock.uptimeMillis();
             plugin.sichtbar(TestAnsicht.this);
-            if (!m.brauchtDaten() || gefuellt) plugin.inhaltFertig(TestAnsicht.this);
+            if (!m.brauchtDaten() || gefuellt) {
+                szeneMessen();
+                plugin.inhaltFertig(TestAnsicht.this);
+            }
             zeitText();
         }
 
@@ -268,7 +271,7 @@ final class TestAnsicht implements OverlayFactory {
                     m.aufbauMs = aufbauMs;
                     if (gefuellt) return;
                     gefuellt = true;
-                    if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+                    if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -487,7 +490,15 @@ final class TestAnsicht implements OverlayFactory {
             autoScroll.start();
         }
 
+        /** The weather scene's own figures (frame times, CPU, bitmap memory) for "bereit" and the status. */
+        void szeneMessen() {
+            if (wetterView != null) m.szene = wetterView.kennzahlen();
+        }
+
         void zerstoeren() {
+            if (wetterView != null && m.szeneEnde == null) {
+                try { m.szeneEnde = wetterView.kennzahlen(); } catch (RuntimeException ignored) {}
+            }
             if (zerstoert) return;
             zerstoert = true;
             zaehler.stop();

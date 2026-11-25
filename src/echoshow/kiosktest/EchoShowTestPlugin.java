@@ -165,7 +165,11 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboAnsicht.stop();
         aboPersonen.stop();
         aboWetter.stop();
-        main().post(WetterView::freigeben);   // drop the kept weather layers
+        try {
+            WetterView.beenden();   // end the layer build thread, give the weather bitmaps back
+        } catch (RuntimeException | LinkageError ignored) {
+            // nothing was built
+        }
         personenAboFuer = null;
     }
 
@@ -522,6 +526,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         if ("kalender".equals(m.ansicht)) d.put("termine", m.termine == null ? 0 : m.termine.size());
         if ("wetter".equals(m.ansicht)) {
+            Map<String, Object> sz = m.szene;
+            if (sz != null) for (Map.Entry<String, Object> e : sz.entrySet()) if (e.getValue() != null) d.put(e.getKey(), e.getValue());
             WetterLage.Daten wd = m.wetter;
             d.put("zustand", wd == null ? "" : wd.zustand);
             d.put("daten_cache", m.wetterAusCache);
@@ -563,6 +569,11 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             if (aktuell == a) aktuell = null;
             if (m.tSichtbar > 0) {
                 zeile(String.format(Locale.ROOT, "%s %s zu: Ruckler %d von %d Frames, max %d ms", uhr(), m.ansicht, m.ruckler, m.frames, m.maxFrameMs));
+            }
+            Map<String, Object> sz = m.szeneEnde;
+            if (sz != null) {
+                zeile(String.format(Locale.ROOT, "%s wetter Szene: %s fps, Frame %s / %s ms (Median / 95 %%), CPU Prozess %s %%, Hauptthread %s %%, Bitmaps %s KB, Ruckler %s",
+                    uhr(), sz.get("szene_fps"), sz.get("frame_median_ms"), sz.get("frame_p95_ms"), sz.get("cpu_prozess_pct"), sz.get("cpu_haupt_pct"), sz.get("bitmap_kb"), sz.get("ruckler")));
             }
         }
         status();

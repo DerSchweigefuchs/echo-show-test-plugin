@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
@@ -107,7 +107,7 @@
         "24"
       ],
       "group": "Wetter-Test",
-      "description": "Ziel-Bildrate der Wetterszene. Sie pausiert ganz, solange sie nicht sichtbar ist."
+      "description": "Ziel-Bildrate der Wetterszene. Sie pausiert ganz, solange sie nicht sichtbar ist, der Bildschirmschoner läuft oder der Bildschirm aus ist."
     },
     {
       "key": "uebergang",
