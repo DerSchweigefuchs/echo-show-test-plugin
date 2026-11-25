@@ -8,7 +8,7 @@ import java.util.Map;
  * Written from the plugin worker and the main thread, so every field is volatile.
  */
 final class Messung {
-    final String ansicht;      // kalender | timer | liste
+    final String ansicht;      // kalender | timer | liste | anwesenheit
     final String token;        // echo_show/ansicht token, null when opened by a command
     final String quelle;       // "HA" or "Befehl"
     final boolean kalt;
@@ -26,6 +26,11 @@ final class Messung {
 
     volatile List<Kalender.Termin> termine;
     volatile String datenFehler;
+
+    // anwesenheit: people (render_template) and 7-day history; null while loading
+    volatile List<Anwesenheit.Person> personen;
+    volatile Map<String, List<Anwesenheit.Eintrag>> verlauf;
+    volatile boolean personenAusCache, verlaufAusCache, verlaufReduziert, verlaufLaeuft;
 
     volatile Double ramVorherMb, ramNachherMb;
     volatile long heapMb = -1, nativeHeapMb = -1;
@@ -50,5 +55,5 @@ final class Messung {
 
     long ms(long t) { return t == 0 ? -1 : t - t0; }
 
-    boolean brauchtDaten() { return "kalender".equals(ansicht); }
+    boolean brauchtDaten() { return "kalender".equals(ansicht) || "anwesenheit".equals(ansicht); }
 }

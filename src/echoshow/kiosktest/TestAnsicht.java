@@ -64,9 +64,11 @@ final class TestAnsicht implements OverlayFactory {
         }
     }
 
-    /** Main thread: the calendar answer arrived (posted by the plugin). */
+    /** Main thread: the calendar answer, or new presence data (people or history), arrived (posted by the plugin). */
     void datenDa() {
-        if (aktiv != null) aktiv.kalenderFuellen();
+        if (aktiv == null) return;
+        if (aktiv.anwView != null) aktiv.anwFuellen();
+        else aktiv.kalenderFuellen();
     }
 
     /** Main thread: the RAM reading after opening arrived. */
@@ -92,6 +94,8 @@ final class TestAnsicht implements OverlayFactory {
         final LinearLayout root;
         TextView zeitLabel, framesLabel;
         LinearLayout kalenderListe;
+        AnwesenheitView anwView;
+        String messZeit = "", messFrames = "";
         ScrollView scroll;
         ObjectAnimator autoScroll;
         final FrameZaehler zaehler = new FrameZaehler();
@@ -112,10 +116,12 @@ final class TestAnsicht implements OverlayFactory {
             root.setOrientation(LinearLayout.VERTICAL);
             root.setBackgroundColor(th.color("surface"));
             root.setClickable(true);   // touches stay in the test view
-            root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            // the presence page brings its own header (back button, title, switch), like the dashboard page it copies
+            if (!"anwesenheit".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-            if ("timer".equals(m.ansicht)) timer(inhalt);
+            if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
+            else if ("timer".equals(m.ansicht)) timer(inhalt);
             else if ("liste".equals(m.ansicht)) liste(inhalt);
             else kalender(inhalt);
             zeitText();
@@ -206,12 +212,13 @@ final class TestAnsicht implements OverlayFactory {
             switch (m.ansicht) {
                 case "timer": return "Timer (nativ)";
                 case "liste": return "Liste 50 (nativ)";
+                case "anwesenheit": return "Anwesenheit (nativ)";
                 default: return "Kalender (nativ)";
             }
         }
 
         void zeitText() {
-            if (zeitLabel == null) return;
+            if (zeitLabel == null && anwView == null) return;
             StringBuilder sb = new StringBuilder();
             if (m.tInhalt > 0) {
                 sb.append("offen in ").append(m.ms(m.tInhalt)).append(" ms");
@@ -226,13 +233,38 @@ final class TestAnsicht implements OverlayFactory {
                 sb.append(" · RAM frei ").append(Math.round(m.ramVorherMb)).append("→").append(Math.round(m.ramNachherMb)).append(" MB");
             }
             sb.append(" · ").append(m.quelle);
-            zeitLabel.setText(sb.toString());
+            messZeit = sb.toString();
+            if (zeitLabel != null) zeitLabel.setText(messZeit);
+            if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
         }
 
         private void framesText() {
-            if (framesLabel == null || !sichtbar) return;
-            framesLabel.setText(String.format(Locale.ROOT, "%d fps · Ruckler %d von %d Frames · max %d ms",
-                zaehler.fps, zaehler.ruckler, zaehler.frames, zaehler.maxNs / 1_000_000L));
+            if (!sichtbar) return;
+            messFrames = String.format(Locale.ROOT, "%d fps · Ruckler %d von %d Frames · max %d ms",
+                zaehler.fps, zaehler.ruckler, zaehler.frames, zaehler.maxNs / 1_000_000L);
+            if (framesLabel != null) framesLabel.setText(messFrames);
+            if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
+        }
+
+        // ---- (d) presence -------------------------------------------------------------------------------------
+
+        private void anwesenheit(FrameLayout inhalt) {
+            anwView = new AnwesenheitView(ctx, new AnwesenheitView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void minute() { plugin.anwesenheitMinute(TestAnsicht.this); }
+            });
+            inhalt.addView(anwView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            anwFuellen();
+        }
+
+        /** People and / or history changed. The first complete history counts as "content ready". */
+        void anwFuellen() {
+            if (zerstoert || anwView == null) return;
+            anwView.fehler = m.verlauf == null ? m.datenFehler : null;
+            anwView.setDaten(m.personen, m.verlauf);
+            if (gefuellt || (m.verlauf == null && m.datenFehler == null)) return;
+            gefuellt = true;
+            if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
         }
 
         // ---- (a) calendar -------------------------------------------------------------------------------------

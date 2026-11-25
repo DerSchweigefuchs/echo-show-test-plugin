@@ -3,14 +3,18 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: drei native Vollbild-Testansichten (Kalender-Tagesliste, Timer-Countdown, Liste mit 50 Zeilen), um native Android-Views mit Lovelace-Ebenen zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events).",
+  "description": "Prototyp: vier native Vollbild-Testansichten (Kalender-Tagesliste, Timer-Countdown, Liste mit 50 Zeilen, Anwesenheit mit Tages- und Wochenverlauf), um native Android-Views mit Lovelace-Ebenen zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
-  "capabilities": ["overlay", "ha", "host.read"],
+  "capabilities": [
+    "overlay",
+    "ha",
+    "host.read"
+  ],
   "settings": [
     {
       "key": "abo",
@@ -54,25 +58,68 @@
       "type": "select",
       "title": "Timer-Animation",
       "default": "sekündlich",
-      "options": ["sekündlich", "flüssig"],
+      "options": [
+        "sekündlich",
+        "flüssig"
+      ],
       "group": "Timer-Test",
       "description": "sekündlich: Ring und Ziffern springen jede Sekunde. flüssig: der Ring läuft mit jedem Frame (Lasttest)."
+    },
+    {
+      "key": "personen",
+      "type": "string",
+      "title": "Personen",
+      "default": "alle",
+      "group": "Anwesenheit-Test",
+      "description": "alle oder person-Entitäten mit Komma getrennt, in der gewünschten Reihenfolge. Gelesen über render_template."
+    },
+    {
+      "key": "verlaufCache",
+      "type": "boolean",
+      "title": "Verlauf 5 Minuten merken",
+      "default": true,
+      "group": "Anwesenheit-Test",
+      "description": "Wie die Lovelace-Seite: Der 7-Tage-Verlauf wird nur neu geladen, wenn jemand kommt oder geht oder er älter als 5 Minuten ist. Aus: bei jedem Öffnen neu laden."
     },
     {
       "key": "uebergang",
       "type": "select",
       "title": "Übergang beim Öffnen",
       "default": "keine",
-      "options": ["keine", "fade", "slide", "scale"],
+      "options": [
+        "keine",
+        "fade",
+        "slide",
+        "scale"
+      ],
       "group": "Darstellung",
       "description": "Für faire Zeitmessung: keine. Die Lovelace-Ebenen erscheinen ebenfalls ohne Übergang."
     }
   ],
   "commands": [
-    { "id": "zeigen", "title": "Ansicht zeigen (Link-Argument: kalender, timer oder liste)" },
-    { "id": "kalender", "title": "Kalender-Test zeigen" },
-    { "id": "timer", "title": "Timer-Test zeigen" },
-    { "id": "liste", "title": "Listen-Test zeigen" },
-    { "id": "schliessen", "title": "Test-Ansicht schließen" }
+    {
+      "id": "zeigen",
+      "title": "Ansicht zeigen (Link-Argument: kalender, timer, liste oder anwesenheit)"
+    },
+    {
+      "id": "kalender",
+      "title": "Kalender-Test zeigen"
+    },
+    {
+      "id": "timer",
+      "title": "Timer-Test zeigen"
+    },
+    {
+      "id": "liste",
+      "title": "Listen-Test zeigen"
+    },
+    {
+      "id": "anwesenheit",
+      "title": "Anwesenheit-Test zeigen"
+    },
+    {
+      "id": "schliessen",
+      "title": "Test-Ansicht schließen"
+    }
   ]
 }

@@ -20,18 +20,22 @@ import me.jxl.kiosk.plugins.PluginHost;
 /**
  * Prototype: native full-screen test views to compare with the Lovelace layers on the Echo Show.
  *
- * Opened by ks://plugin/echo-show-test/zeigen/<kalender|timer|liste>[/<param>] or by the echo_show integration's view
- * requests (echo_show/ansicht/abo, REGELN-ANSICHTEN.md) for the pages test-kalender, test-timer and test-liste only.
+ * Opened by ks://plugin/echo-show-test/zeigen/<kalender|timer|liste|anwesenheit>[/<param>] or by the echo_show
+ * integration's view requests (echo_show/ansicht/abo) for the pages test-kalender, test-timer, test-liste and
+ * test-anwesenheit only.
  * Every other page is ignored without an answer, so the real Lovelace pages are never touched. The answers
  * (echo_show/ansicht/melden "bereit" / "gezeigt") carry the times measured on the device.
  *
- * Home Assistant is only read: calendar.get_events with return_response. Lifecycle callbacks run on the plugin worker;
+ * Home Assistant is only read: calendar.get_events with return_response, a render_template over the person domain and
+ * history/history_during_period. Lifecycle callbacks run on the plugin worker;
  * the view callbacks (sichtbar, inhaltFertig, beendet, ...) on the main thread, so shared state is synchronized.
  */
 public final class EchoShowTestPlugin implements KioskPlugin {
     static final String OVERLAY = "ansicht";
     static final String ABO = "ansicht_abo";
-    private static final String[] ANSICHTEN = {"kalender", "timer", "liste"};
+    static final String PERSONEN = "anw_personen";
+    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit"};
+    private static final long VERLAUF_GUELTIG = 300_000L;   // like the dashboard page: reload after 5 minutes
 
     private volatile PluginHost host;
     private Handler main;   // created on first use
@@ -43,6 +47,16 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile int timerSekunden = 300;
     private volatile boolean timerFluessig;
     private volatile String uebergang = "keine";
+    private volatile String personen = "alle";
+    private volatile boolean verlaufCache = true;
+
+    // presence data (worker thread writes, views read immutable snapshots)
+    private String personenAboFuer;                    // template of the active people subscription
+    private volatile List<Anwesenheit.Person> personenCache;
+    private volatile Map<String, List<Anwesenheit.Eintrag>> verlaufCacheDaten;
+    private volatile String verlaufCacheKey;
+    private volatile long verlaufCacheZeit;
+    private volatile boolean verlaufNurWechsel;        // set once HA's answer was too large for the 32 KB limit
 
     // subscription state (worker thread)
     private String aboFuer;
@@ -67,7 +81,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         timerSekunden = sek instanceof Number ? Math.max(5, Math.min(3600, ((Number) sek).intValue())) : 300;
         timerFluessig = "flüssig".equals(s.get("timerModus"));
         uebergang = text(s.get("uebergang"), "keine");
+        personen = text(s.get("personen"), "alle");
+        verlaufCache = !Boolean.FALSE.equals(s.get("verlaufCache"));
         aboAbgleichen();
+        personenAbgleichen();
         status();
     }
 
@@ -78,7 +95,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 String name = args.isEmpty() ? "kalender" : ansicht(args.get(0));
                 if (name == null) {
                     PluginHost h = host;
-                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste", true);
+                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit", true);
                     return;
                 }
                 oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.get(1) : null), "Befehl");
@@ -87,6 +104,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             case "kalender":
             case "timer":
             case "liste":
+            case "anwesenheit":
                 oeffnen(command, null, false, Collections.<String, Object>emptyMap(), "Befehl");
                 return;
             case "schliessen":
@@ -99,6 +117,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     @Override public void onEvent(String event, Map<String, Object> payload) {
         if (("ks.ha.subscription." + ABO).equals(event)) aboEreignis(payload);
+        else if (("ks.ha.subscription." + PERSONEN).equals(event)) personenEreignis(payload);
         else if ("overlay.closed".equals(event) && OVERLAY.equals(payload.get("key"))) {
             synchronized (this) { aktuell = null; }   // back gesture; the view's onDestroy records the result
         }
@@ -108,6 +127,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         host = null;   // KS has revoked the host and removes the overlay itself
         synchronized (this) { aktuell = null; }
         aboFuer = null;
+        personenAboFuer = null;
     }
 
     // ---- echo_show/ansicht subscription ---------------------------------------------------------------------------
@@ -195,7 +215,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         TestAnsicht a = new TestAnsicht(this, m);
         synchronized (this) { aktuell = a; }
         ramLesen(m, true, a);
-        if (m.brauchtDaten()) kalenderLaden(h, a);
+        if ("kalender".equals(ansicht)) kalenderLaden(h, a);
+        else if ("anwesenheit".equals(ansicht)) anwesenheitLaden(a);
         try {
             h.showOverlay(OVERLAY, spec(), a);
         } catch (RuntimeException e) {   // older KS, rate limit or stopped session
@@ -245,6 +266,166 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
     }
 
+    // ---- presence: people subscription and history ---------------------------------------------------------------
+
+    /** Keeps one render_template subscription over the person domain, like the dashboard's live states. */
+    private void personenAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        Map<String, Object> msg = h.isHeadless() ? null : Anwesenheit.personenAbo(Anwesenheit.ids(personen));
+        String soll = msg == null ? null : (String) msg.get("template");
+        if (soll == null ? personenAboFuer == null : soll.equals(personenAboFuer)) return;
+        try { h.haUnsubscribe(PERSONEN); } catch (RuntimeException ignored) {}
+        personenAboFuer = null;
+        personenCache = null;
+        verlaufCacheDaten = null;
+        if (msg == null) return;
+        personenAboFuer = soll;
+        try {
+            h.haSubscribe(PERSONEN, msg, (ok, data, error) -> {
+                if (!ok && soll.equals(personenAboFuer)) {
+                    personenAboFuer = null;
+                    personenFehler("Personen nicht lesbar: " + error);
+                }
+            });
+        } catch (RuntimeException e) {
+            personenAboFuer = null;
+            personenFehler("Personen nicht lesbar: " + e.getMessage());
+        }
+    }
+
+    private void personenEreignis(Map<String, Object> p) {
+        Object typ = p.get("type");
+        if ("ended".equals(typ)) {
+            personenAboFuer = null;
+            personenAbgleichen();
+            return;
+        }
+        if (!"event".equals(typ) || !(p.get("event") instanceof Map)) return;
+        Map<?, ?> ev = (Map<?, ?>) p.get("event");
+        if (ev.containsKey("error")) {
+            personenFehler("Vorlage: " + ev.get("error"));
+            return;
+        }
+        if (!ev.containsKey("result")) return;
+        List<Anwesenheit.Person> ps;
+        try {
+            ps = Anwesenheit.personen(ev.get("result"), Anwesenheit.ids(personen), Json::lesen);
+        } catch (RuntimeException e) {
+            personenFehler("Personen unlesbar");
+            return;
+        }
+        personenCache = ps;
+        TestAnsicht a = anwesenheitOffen();
+        if (a == null) return;
+        Messung m = a.m;
+        m.personen = ps;
+        boolean wechsel = !Anwesenheit.schluessel(ps).equals(verlaufCacheKey);
+        if (!m.verlaufLaeuft && (m.verlauf == null && m.datenFehler == null || wechsel)) verlaufHolen(a);
+        main().post(() -> TestAnsicht.sicher(a::datenDa));
+    }
+
+    private void personenFehler(String text) {
+        TestAnsicht a = anwesenheitOffen();
+        if (a != null && a.m.verlauf == null && a.m.datenFehler == null) {
+            a.m.datenFehler = text;
+            if (a.m.tDaten == 0) a.m.tDaten = SystemClock.uptimeMillis();
+            main().post(() -> TestAnsicht.sicher(a::datenDa));
+        }
+        PluginHost h = host;
+        if (h != null) h.log(text);
+    }
+
+    private synchronized TestAnsicht anwesenheitOffen() {
+        return aktuell != null && "anwesenheit".equals(aktuell.m.ansicht) ? aktuell : null;
+    }
+
+    /** Worker: people from the live subscription (or wait for its first result), then the history. */
+    private void anwesenheitLaden(TestAnsicht a) {
+        Messung m = a.m;
+        List<Anwesenheit.Person> ps = personenCache;
+        if (ps == null) {
+            if (personenAboFuer == null) personenAbgleichen();   // e.g. after a failed subscription
+            return;   // personenEreignis continues once HA sends the people
+        }
+        m.personen = ps;
+        m.personenAusCache = true;
+        verlaufHolen(a);
+    }
+
+    /** Any thread: the 7-day history, from the 5-minute cache when the people's states did not change. */
+    private void verlaufHolen(TestAnsicht a) {
+        Messung m = a.m;
+        PluginHost h = host;
+        List<Anwesenheit.Person> ps = m.personen;
+        if (h == null || ps == null) return;
+        String key = Anwesenheit.schluessel(ps);
+        long jetzt = System.currentTimeMillis();
+        Map<String, List<Anwesenheit.Eintrag>> cache = verlaufCacheDaten;
+        if (verlaufCache && cache != null && key.equals(verlaufCacheKey) && jetzt - verlaufCacheZeit < VERLAUF_GUELTIG) {
+            if (m.verlauf == null) m.verlaufAusCache = true;
+            verlaufFertig(a, cache);
+            return;
+        }
+        if (ps.isEmpty()) {
+            verlaufFertig(a, Collections.<String, List<Anwesenheit.Eintrag>>emptyMap());
+            return;
+        }
+        boolean nurWechsel = verlaufNurWechsel;
+        m.verlaufLaeuft = true;
+        try {
+            h.haCall(Anwesenheit.verlaufAnfrage(ps, jetzt, nurWechsel), (ok, data, error) -> {
+                m.verlaufLaeuft = false;
+                if (!ok && !nurWechsel && error != null && error.startsWith("too_large")) {
+                    // more than 32 KB (GPS updates of the person entities): only real state changes, same picture
+                    verlaufNurWechsel = true;
+                    m.verlaufReduziert = true;
+                    verlaufHolen(a);
+                    return;
+                }
+                if (nurWechsel) m.verlaufReduziert = true;
+                if (ok) {
+                    Map<String, List<Anwesenheit.Eintrag>> v;
+                    try {
+                        v = Anwesenheit.verlauf(data);
+                    } catch (RuntimeException e) {
+                        verlaufFehler(a, "Verlauf unlesbar");
+                        return;
+                    }
+                    verlaufCacheDaten = v;
+                    verlaufCacheKey = key;
+                    verlaufCacheZeit = System.currentTimeMillis();
+                    verlaufFertig(a, v);
+                } else {
+                    verlaufFehler(a, error == null ? "unbekannt" : error);
+                }
+            });
+        } catch (RuntimeException e) {
+            m.verlaufLaeuft = false;
+            verlaufFehler(a, "haCall: " + e.getMessage());
+        }
+    }
+
+    private void verlaufFertig(TestAnsicht a, Map<String, List<Anwesenheit.Eintrag>> v) {
+        a.m.verlauf = v;
+        if (a.m.tDaten == 0) a.m.tDaten = SystemClock.uptimeMillis();
+        main().post(() -> TestAnsicht.sicher(a::datenDa));
+    }
+
+    private void verlaufFehler(TestAnsicht a, String text) {
+        if (a.m.verlauf == null) a.m.datenFehler = text;   // a failed reload keeps the history on screen
+        if (a.m.tDaten == 0) a.m.tDaten = SystemClock.uptimeMillis();
+        main().post(() -> TestAnsicht.sicher(a::datenDa));
+    }
+
+    /** Main thread, once a minute while the page is open: reload an outdated history (as the page does). */
+    void anwesenheitMinute(TestAnsicht a) {
+        if (!a.m.verlaufLaeuft && System.currentTimeMillis() - verlaufCacheZeit >= VERLAUF_GUELTIG) {
+            verlaufCacheDaten = null;
+            verlaufHolen(a);
+        }
+    }
+
     /** Main thread: the view is on screen (first draw + two frames). */
     void sichtbar(TestAnsicht a) {
         Messung m = a.m;
@@ -268,8 +449,16 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         d.put("ms", m.ms(m.tInhalt));
         if (m.brauchtDaten()) {
             d.put("daten_ms", m.ms(m.tDaten));
-            d.put("termine", m.termine == null ? 0 : m.termine.size());
             if (m.datenFehler != null) d.put("fehler", m.datenFehler);
+        }
+        if ("kalender".equals(m.ansicht)) d.put("termine", m.termine == null ? 0 : m.termine.size());
+        if ("anwesenheit".equals(m.ansicht)) {
+            List<Anwesenheit.Person> ps = m.personen;
+            d.put("personen", ps == null ? 0 : ps.size());
+            d.put("personen_cache", m.personenAusCache);
+            d.put("verlauf_cache", m.verlaufAusCache);
+            d.put("verlauf_nur_wechsel", m.verlaufReduziert);
+            d.put("modus", AnwesenheitView.modus);
         }
         d.put("heap", m.heapMb);
         d.put("native_heap", m.nativeHeapMb);
