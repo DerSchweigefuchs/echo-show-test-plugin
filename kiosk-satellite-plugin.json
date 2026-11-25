@@ -3,11 +3,11 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer), um native Android-Views mit Lovelace-Seiten zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit, test-wetter). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
+  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer mit Figur des Tages), um native Android-Views mit Lovelace-Seiten zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit, test-wetter). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [

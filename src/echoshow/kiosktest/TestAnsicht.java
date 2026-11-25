@@ -492,7 +492,14 @@ final class TestAnsicht implements OverlayFactory {
 
         /** The weather scene's own figures (frame times, CPU, bitmap memory) for "bereit" and the status. */
         void szeneMessen() {
-            if (wetterView != null) m.szene = wetterView.kennzahlen();
+            if (wetterView == null) return;
+            m.szene = wetterView.kennzahlen();
+            // "bereit" comes within the first second; the figures over full one-second windows follow 5 s later in the status
+            handler.postDelayed(() -> sicher(() -> {
+                if (zerstoert || wetterView == null) return;
+                m.szene5 = wetterView.kennzahlen();
+                plugin.szeneNachtrag(TestAnsicht.this);
+            }), 5000);
         }
 
         void zerstoeren() {

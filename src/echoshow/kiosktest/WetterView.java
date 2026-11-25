@@ -71,6 +71,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         long wechselSeit;                   // uptime of the last swap
         int version;                        // counts swaps, so views rebuild their row filters
         Bitmap mond;
+        Bitmap[] figur;                     // layers: body, head, front, tail (SvgMini)
+        float[][] figurLage;                // per layer {left, top} in figure units, and pivots of head / tail
+        float[] figurDreh;                  // {head x, y, tail x, y} in figure units
+        String figurKey = "", figurBaut;
         String mondKey = "";
         boolean mondBaut;
         final List<Object[]> alt = new ArrayList<>();   // {Bitmap[], recycle after this draw count}
@@ -115,6 +119,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         E.alt.clear();
         if (E.mond != null) E.mond.recycle();
         E.mond = null;
+        recyceln(E.figur);
+        E.figur = null;
+        E.figurKey = "";
+        E.figurBaut = null;
         E.mondKey = "";
         E.wolken = new Bitmap[0];
         E.wolkenQ = E.wolkenY0 = new float[0];
@@ -140,6 +148,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         if (E.vorher != null) for (Bitmap b : E.vorher) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
         for (Object[] a : E.alt) for (Bitmap b : (Bitmap[]) a[0]) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
         if (E.mond != null && !E.mond.isRecycled()) n += E.mond.getAllocationByteCount();
+        n += figurBytes();
+        return n;
+    }
+
+    static long figurBytes() {
+        long n = 0;
+        if (E.figur != null) for (Bitmap b : E.figur) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
         return n;
     }
 
@@ -153,7 +168,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private final long rafferStart = System.currentTimeMillis(), erstellt = SystemClock.uptimeMillis();
     private final boolean namen;
     private final long intervallNs;
-    private final int monat = Calendar.getInstance().get(Calendar.MONTH);
+    private int monat = Calendar.getInstance().get(Calendar.MONTH);
     String mess1 = "", mess2 = "";
 
     // state of the moment
@@ -170,6 +185,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private LightingColorFilter[] wolkenFilter = new LightingColorFilter[0];
     private int cInsel, cTurm, cRot, cGalerie, cLampe, cSand, cDuene, cGras, cMuschel, cRumpf, cSegel, cFock, cPfuetze;
     private boolean nachtKopf;
+
+    // the figure of the day
+    private Figur.Cfg figurCfg;
+    private String figurCfgKey = "", figurKey = "";
+    private boolean figurSchonDa;
+    private long figurSichtbarSeit = -1;
+    static final float FIGUR_X = 820, FIGUR_Y = 286, FIGUR_S = 1.12f;   // feet on the dune, as on the page
 
     // clouds as this view sees them
     private boolean wolkenSchonDa;     // the shared clouds were there when this view opened (no fade)
@@ -200,6 +222,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private float medianMs, p95Ms;
     private long cpuWand, cpuTicks = -1, cpuHaupt;
     private float cpuProzess = -1, cpuHauptProzent = -1;
+    private long cpuStartWand, cpuStartTicks = -1, cpuStartHaupt, ersteZeichnung;
     private String szene = "";
 
     // paint (built once)
@@ -289,7 +312,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         long fest = 0;
         String mo = "live";
         if ("zeitraffer".equals(modus)) mo = "zeitraffer";
-        else if (uhr != null && uhr.matches("\\d{1,2}:\\d{2}")) {
+        else if (uhr != null && uhr.matches("\\d{4}-\\d{2}-\\d{2}T\\d{1,2}:\\d{2}")) {   // a whole moment (previews and tests)
+            String[] dt = uhr.split("[-T:]");
+            Calendar c = Calendar.getInstance();
+            c.set(Integer.parseInt(dt[0]), Integer.parseInt(dt[1]) - 1, Integer.parseInt(dt[2]), Integer.parseInt(dt[3]), Integer.parseInt(dt[4]), 0);
+            c.set(Calendar.MILLISECOND, 0);
+            fest = c.getTimeInMillis();
+            mo = "fest";
+        } else if (uhr != null && uhr.matches("\\d{1,2}:\\d{2}")) {
             String[] t = uhr.split(":");
             Calendar c = Calendar.getInstance();
             c.set(Calendar.HOUR_OF_DAY, Math.min(23, Integer.parseInt(t[0])));
@@ -315,6 +345,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         setClickable(true);
         partikel();
         wolkenSchonDa = E.wolken.length > 0;
+        figurSchonDa = E.figur != null;
     }
 
     private static Paint kopfText(Typeface tf, float sp) {
@@ -510,36 +541,60 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         cpuHaupt = haupt;
     }
 
+    /** Why /proc/self/stat gave no value (null while it works). */
+    static volatile String cpuFehler;
+
     static long prozessTicks() {
         byte[] b = new byte[1024];
         int n;
         try (FileInputStream in = new FileInputStream("/proc/self/stat")) {
             n = in.read(b);
         } catch (Exception e) {
+            cpuFehler = "/proc/self/stat nicht lesbar: " + e.getClass().getSimpleName() + (e.getMessage() == null ? "" : " " + e.getMessage());
             return -1;
         }
-        if (n <= 0) return -1;
+        if (n <= 0) {
+            cpuFehler = "/proc/self/stat leer";
+            return -1;
+        }
         String s = new String(b, 0, n);
         int z = s.lastIndexOf(')');
-        if (z < 0) return -1;
-        String[] f = s.substring(z + 2).trim().split(" +");
+        String[] f = z < 0 ? new String[0] : s.substring(z + 2).trim().split(" +");
         try {
-            return Long.parseLong(f[11]) + Long.parseLong(f[12]);   // fields 14 and 15: utime, stime
+            long v = Long.parseLong(f[11]) + Long.parseLong(f[12]);   // fields 14 and 15: utime, stime
+            cpuFehler = null;
+            return v;
         } catch (RuntimeException e) {
+            cpuFehler = "/proc/self/stat unerwartet aufgebaut (" + f.length + " Felder)";
             return -1;
         }
+    }
+
+    /** CPU since the first frame, for figures asked for before the first one-second window is complete. */
+    private float[] cpuSeitStart() {
+        long wand = SystemClock.elapsedRealtime(), ticks = prozessTicks(), haupt = Debug.threadCpuTimeNanos();
+        float sek = (wand - cpuStartWand) / 1000f;
+        if (cpuStartWand == 0 || sek < .2f) return new float[] {-1, -1};
+        return new float[] {ticks >= 0 && cpuStartTicks >= 0 ? (ticks - cpuStartTicks) / 100f / sek * 100 : -1,
+            haupt > 0 && cpuStartHaupt > 0 ? (haupt - cpuStartHaupt) / 1e9f / sek * 100 : -1};
     }
 
     /** Figures for "bereit" and the status line. */
     Map<String, Object> kennzahlen() {
         perzentile();
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("szene_fps", fps);
+        float[] start = cpuProzess < 0 || cpuHauptProzent < 0 ? cpuSeitStart() : null;
+        float cp = cpuProzess >= 0 ? cpuProzess : start[0], ch = cpuHauptProzent >= 0 ? cpuHauptProzent : start[1];
+        long seit = letzteZeichnung - ersteZeichnung;
+        m.put("szene_fps", fps > 0 ? fps : (seit > 0 && bilderGesamt > 0 ? Math.round(bilderGesamt * 1e9f / seit) : 0));
+        m.put("messfenster", fps > 0 && cpuProzess >= 0 ? "1 s" : "seit erstem Bild");
         m.put("frame_median_ms", Math.round(medianMs * 10) / 10.0);
         m.put("frame_p95_ms", Math.round(p95Ms * 10) / 10.0);
         m.put("ruckler", rucklerGesamt);
-        m.put("cpu_prozess_pct", cpuProzess < 0 ? null : Math.round(cpuProzess));
-        m.put("cpu_haupt_pct", cpuHauptProzent < 0 ? null : Math.round(cpuHauptProzent));
+        m.put("cpu_prozess_pct", cp < 0 ? null : Math.round(cp));
+        m.put("cpu_haupt_pct", ch < 0 ? null : Math.round(ch));
+        if (cpuFehler != null) m.put("cpu_fehler", cpuFehler);
+        m.put("figur_kb", figurBytes() / 1024);
         m.put("cpu_kerne", Runtime.getRuntime().availableProcessors());
         m.put("bitmap_kb", bitmapBytes() / 1024);
         return m;
@@ -556,7 +611,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         dy = (getHeight() - H * skala) / 2;
         long anim = SystemClock.uptimeMillis();
         float t = anim / 1000f;
-        if (cpuWand == 0) cpu();
+        if (cpuWand == 0) {
+            cpu();
+            cpuStartWand = cpuWand;
+            cpuStartTicks = cpuTicks;
+            cpuStartHaupt = cpuHaupt;
+            ersteZeichnung = System.nanoTime();
+        }
         moment(anim);
         ebenen(anim);
 
@@ -578,6 +639,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         meer(c, t);
         leuchtturm(c, t);
         boot(c, t);
+        figur(c, t);
+        mitShader(ausblenden);   // the fade into the dark area stays above the figure's feet (page: wl-fd after the figure)
+        c.drawRect(0, 292, W, UNTEN, p);
+        p.setShader(null);
         niederschlag(c, t);
         c.restore();
         kopf(c);
@@ -586,7 +651,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
         boolean wolkenFertig = lage.cover <= 0 || (E.wolken.length > 0 && E.wolkenKey.startsWith(wolkenGrund()) && wolkenAlpha(anim) >= 1);
         boolean mondFertig = !mondDa || E.mond != null;
-        if (!fertigGemeldet && daten != null && wolkenFertig && mondFertig) {
+        boolean figurFertig = figurKey.isEmpty() || figurKey.equals(E.figurKey);
+        if (!fertigGemeldet && daten != null && wolkenFertig && mondFertig && figurFertig) {
             fertigGemeldet = true;
             aufbauMs = anim - erstellt;
             aktionen.fertig(aufbauMs);
@@ -635,7 +701,18 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             if (mx < -80 || mx > W + 80) mondDa = false;
         }
         int tagNr = (int) Math.floor((simZeit + Calendar.getInstance().getTimeZone().getOffset(simZeit)) / 864e5);
+        Calendar mc = Calendar.getInstance();
+        mc.setTimeInMillis(simZeit);
+        monat = mc.get(Calendar.MONTH);
         grund = lage.cond + "/" + tagNr + "/" + mondDa + "/" + skala + "/";
+        // figure of the day: person, clothes and pose follow day, weather, temperature and night (like the page)
+        boolean nacht = licht.tag < .5f, sonneJetzt = lage.sonneMoeglich && !nacht, mondhell = mondDa && nacht;
+        double T = d != null && d.temp != null ? Math.round(d.temp) : 10;
+        String ck = tagNr + "/" + lage.cond + "/" + T + "/" + nacht + "/" + sonneJetzt + "/" + mondhell + "/" + lage.stark + "/" + monat;
+        if (!ck.equals(figurCfgKey)) {
+            figurCfgKey = ck;
+            figurCfg = Figur.fuerSzene(tagNr, monat, lage.cond, T, nacht, sonneJetzt, mondhell, lage.stark);
+        }
     }
 
     // ---- light-dependent colours and the shared layers -----------------------------------------------------------------
@@ -654,6 +731,12 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 version = E.version;
                 himmelKey = "";   // new row filters
             }
+        }
+        // figure: one bitmap per layer, in the light of the hour in steps (8 between night and day, overlays in quarters)
+        if (figurCfg != null) {
+            WetterLage.Licht fl = figurLicht(L);
+            figurKey = figurCfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skala;
+            if (!figurKey.equals(E.figurKey) && E.figurBaut == null) figurBauen(figurKey, figurCfg, fl, skala);
         }
         String hk = Math.round(Math.max(-15, Math.min(15, sonneAlt)) * 20) + (steigt ? "s" : "f") + lage.cond + mondDa;
         if (!hk.equals(himmelKey) || himmelShader == null) {
@@ -690,6 +773,81 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 }
             }
         }
+    }
+
+    /** The light of the hour in coarse steps, so the figure is redrawn only a few times through dusk and dawn. */
+    private static WetterLage.Licht figurLicht(WetterLage.Licht L) {
+        WetterLage.Licht q = new WetterLage.Licht();
+        q.tag = Math.round(L.tag * 8) / 8f;
+        q.warm = Math.round(L.warm * 4) / 4f;
+        q.kuehl = Math.round(L.kuehl * 4) / 4f;
+        q.blau = Math.round(L.blau * 4) / 4f;
+        q.himmel = L.himmel;
+        return q;
+    }
+
+    private void figurBauen(String key, Figur.Cfg cfg, WetterLage.Licht fl, float sk) {
+        E.figurBaut = key;
+        try {
+            bauer().execute(() -> {
+                Object[] r = null;
+                try {
+                    r = figurBilder(cfg, fl, sk);
+                } catch (RuntimeException ignored) {
+                    // try again with the next frame
+                }
+                final Object[] fr = r;
+                haupt().post(() -> {
+                    if (!key.equals(E.figurBaut)) return;
+                    E.figurBaut = null;
+                    if (fr == null) return;
+                    if (E.figur != null) spaeterRecyceln(E.figur);
+                    E.figur = (Bitmap[]) fr[0];
+                    E.figurLage = (float[][]) fr[1];
+                    E.figurDreh = (float[]) fr[2];
+                    E.figurKey = key;
+                });
+            });
+        } catch (RuntimeException ended) {
+            E.figurBaut = null;
+        }
+    }
+
+    /**
+     * The figure in its layers (body, head, scarf in front, dog's tail), each cut to its own size, in screen resolution.
+     * Colours take the light: at night darker and cool (the page's night factors .58 / .6 / .7), at dusk the same
+     * overlays as the landscape. Returns {Bitmap[4], float[4][2] top-left in figure units, float[4] pivots}.
+     */
+    static Object[] figurBilder(Figur.Cfg cfg, WetterLage.Licht fl, float sk) {
+        SvgMini.Knoten root = SvgMini.parse(Figur.figurX(cfg));
+        SvgMini.Lauf mass = new SvgMini.Lauf(null, -1, null);
+        mass.lauf(root);
+        final float nacht = 1 - fl.tag;
+        SvgMini.Farbe farbe = (argb, hex) -> {
+            if (hex) {
+                int r = (argb >> 16) & 255, g = (argb >> 8) & 255, b = argb & 255;
+                int dunkel = WetterLage.rgb(Math.round(r * .58f), Math.round(g * .6f), Math.round(b * .7f));
+                return WetterLage.tont(WetterLage.mix(argb, dunkel, nacht), 245, fl);
+            }
+            if ((argb & 0xFFFFFF) == 0xFFE8CD) return WetterLage.alpha(argb, .45f - .2f * nacht);   // rim light, fainter at night
+            return argb;
+        };
+        float k = sk * FIGUR_S;
+        Bitmap[] bm = new Bitmap[SvgMini.SCHICHTEN];
+        float[][] lage = new float[SvgMini.SCHICHTEN][];
+        for (int s = 0; s < SvgMini.SCHICHTEN; s++) {
+            RectF g = mass.grenzen[s];
+            if (g == null) continue;
+            Bitmap b = Bitmap.createBitmap(Math.max(1, (int) Math.ceil(g.width() * k) + 2), Math.max(1, (int) Math.ceil(g.height() * k) + 2), Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            c.translate(1, 1);
+            c.scale(k, k);
+            c.translate(-g.left, -g.top);
+            new SvgMini.Lauf(c, s, farbe).lauf(root);
+            bm[s] = b;
+            lage[s] = new float[] {g.left - 1 / k, g.top - 1 / k};
+        }
+        return new Object[] {bm, lage, new float[] {mass.kopfDreh[0], mass.kopfDreh[1], mass.schwanzDreh[0], mass.schwanzDreh[1]}};
     }
 
     private void wolkenBauen(String key, int stufe) {
@@ -1068,9 +1226,46 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             p.setColor(cPfuetze);
             c.drawPath(PFUETZEN, p);
         }
-        mitShader(ausblenden);
-        c.drawRect(0, 292, W, UNTEN, p);
-        p.setShader(null);
+    }
+
+    /** The figure: tail (wagging), body, head (looking around a little), scarf; small layer bitmaps, only transformed. */
+    private void figur(Canvas c, float t) {
+        Bitmap[] bm = E.figur;
+        if (bm == null) return;
+        long anim = SystemClock.uptimeMillis();
+        float alpha = 1;
+        if (!figurSchonDa) {
+            if (figurSichtbarSeit < 0) figurSichtbarSeit = anim;
+            alpha = Math.min(1, (anim - figurSichtbarSeit) / 450f);
+        }
+        float k = 1 / (skala * FIGUR_S);
+        float[] dreh = E.figurDreh;
+        // wf-head: 9 s alternate, -1.5 deg for the first 30 %, 2 deg from 70 %; wf-tail: 0.5 s alternate, -10 .. 14 deg
+        float u = (t % 18) / 9;
+        if (u > 1) u = 2 - u;
+        float kopf = u < .3f ? -1.5f : (u > .7f ? 2 : -1.5f + 3.5f * WetterLage.glatt(.3, .7, u));
+        float v = (t % 1) / .5f;
+        if (v > 1) v = 2 - v;
+        float schwanz = -10 + 24 * WetterLage.glatt(0, 1, v);
+        int[] reihe = {SvgMini.SCHWANZ, SvgMini.KOERPER, SvgMini.KOPF, SvgMini.VORNE};
+        bild.setAlpha(Math.round(255 * alpha));
+        c.save();
+        c.translate(FIGUR_X, FIGUR_Y);
+        c.scale(FIGUR_S, FIGUR_S);
+        for (int s : reihe) {
+            Bitmap b = s < bm.length ? bm[s] : null;
+            if (b == null || b.isRecycled()) continue;
+            float[] l = E.figurLage[s];
+            c.save();
+            if (s == SvgMini.KOPF) c.rotate(kopf, dreh[0], dreh[1]);
+            if (s == SvgMini.SCHWANZ) c.rotate(schwanz, dreh[2], dreh[3]);
+            c.translate(l[0], l[1]);
+            c.scale(k, k);
+            c.drawBitmap(b, 0, 0, bild);
+            c.restore();
+        }
+        c.restore();
+        bild.setAlpha(255);
     }
 
     /** Glitter path under the sun or moon, surf, rain rings, wind shimmer. */

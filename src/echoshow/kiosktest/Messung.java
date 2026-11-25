@@ -36,7 +36,7 @@ final class Messung {
     volatile WetterLage.Daten wetter;
     volatile boolean wetterAusCache;
     volatile long aufbauMs = -1;
-    volatile java.util.Map<String, Object> szene, szeneEnde;   // the scene's own figures at "bereit" and when it closes
+    volatile java.util.Map<String, Object> szene, szene5, szeneEnde;   // the scene's own figures at "bereit" and when it closes
 
     volatile Double ramVorherMb, ramNachherMb;
     volatile long heapMb = -1, nativeHeapMb = -1;

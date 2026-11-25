@@ -560,6 +560,18 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         status();
     }
 
+    /** Main thread, 5 s after "bereit": the scene's figures over full one-second windows, into the status. */
+    void szeneNachtrag(TestAnsicht a) {
+        Map<String, Object> sz = a.m.szene5;
+        if (sz == null) return;
+        synchronized (this) {
+            zeile(String.format(Locale.ROOT, "%s wetter nach 5 s: %s fps, Frame %s / %s ms, CPU Prozess %s %%, Hauptthread %s %%, Bitmaps %s KB (Figur %s KB)%s",
+                uhr(), sz.get("szene_fps"), sz.get("frame_median_ms"), sz.get("frame_p95_ms"), sz.get("cpu_prozess_pct"), sz.get("cpu_haupt_pct"), sz.get("bitmap_kb"), sz.get("figur_kb"),
+                sz.get("cpu_fehler") != null ? ", " + sz.get("cpu_fehler") : ""));
+        }
+        status();
+    }
+
     /** Main thread: the view was removed (close button, back, replaced or session end). */
     void beendet(TestAnsicht a) {
         Messung m = a.m;
@@ -572,8 +584,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             }
             Map<String, Object> sz = m.szeneEnde;
             if (sz != null) {
-                zeile(String.format(Locale.ROOT, "%s wetter Szene: %s fps, Frame %s / %s ms (Median / 95 %%), CPU Prozess %s %%, Hauptthread %s %%, Bitmaps %s KB, Ruckler %s",
-                    uhr(), sz.get("szene_fps"), sz.get("frame_median_ms"), sz.get("frame_p95_ms"), sz.get("cpu_prozess_pct"), sz.get("cpu_haupt_pct"), sz.get("bitmap_kb"), sz.get("ruckler")));
+                zeile(String.format(Locale.ROOT, "%s wetter Szene: %s fps, Frame %s / %s ms (Median / 95 %%), CPU Prozess %s %%, Hauptthread %s %%, Bitmaps %s KB, Ruckler %s%s",
+                    uhr(), sz.get("szene_fps"), sz.get("frame_median_ms"), sz.get("frame_p95_ms"), sz.get("cpu_prozess_pct"), sz.get("cpu_haupt_pct"), sz.get("bitmap_kb"), sz.get("ruckler"),
+                    sz.get("cpu_fehler") != null ? ", " + sz.get("cpu_fehler") : ""));
             }
         }
         status();
