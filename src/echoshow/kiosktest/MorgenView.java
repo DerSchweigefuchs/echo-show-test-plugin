@@ -274,7 +274,15 @@ final class MorgenView extends FrameLayout {
         }
 
         boolean istNachrichtVollbild() {
-            if (status == null || !status.aktiv || status.seg == null || mini || "aus".equals(status.ansicht)) return false;
+            if (status == null || !status.aktiv || mini || "aus".equals(status.ansicht)) return false;
+            if (status.seg == null) {
+                // During startup before seg 0 arrives: only show live weather backdrop if group 0 is wetter/begruessung
+                if (!status.gruppen.isEmpty()) {
+                    String firstArt = status.gruppen.get(0).art;
+                    return !("wetter".equals(firstArt) || "begruessung".equals(firstArt));
+                }
+                return true;
+            }
             String a = status.seg.art;
             return "meldung".equals(a) || "titel".equals(a) || "mehr".equals(a) || "text".equals(a);
         }
@@ -325,14 +333,71 @@ final class MorgenView extends FrameLayout {
             c.scale(skala, skala);
             c.clipRect(0, 0, W, H);
             try {
-                MorgenDaten.Segment seg = (status != null && status.aktiv) ? status.seg : null;
-                if (seg == null || mini) {
+                boolean aktiv = status != null && status.aktiv;
+                MorgenDaten.Segment seg = aktiv ? status.seg : null;
+                if (mini) {
                     zeichneStandbyWetter(c, nowMs, animS);
-                } else {
+                } else if (seg != null) {
                     zeichneEinheitlicheStory(c, seg, nowMs, animS);
+                } else if (aktiv) {
+                    zeichneVorbereitung(c, nowMs, animS);
+                } else {
+                    zeichneStandbyWetter(c, nowMs, animS);
                 }
             } catch (RuntimeException ignored) {}
             c.restore();
+        }
+
+        // ==== LOADING / PREPARATION FRAME (while TTS starts — never flashes old weather!) ===========================
+
+        private void zeichneVorbereitung(Canvas c, long nowMs, float animS) {
+            p.setStyle(Paint.Style.FILL);
+            if (istNachrichtVollbild()) {
+                p.setColor(0xFFFFFFFF);
+                p.setShader(bgNews);
+                c.drawRect(0, 0, W, H, p);
+                p.setShader(null);
+            } else {
+                p.setColor(0xFFFFFFFF);
+                p.setShader(scrimDim);
+                c.drawRect(0, 0, W, H, p);
+                p.setShader(null);
+            }
+
+            // Show the exact rundown top bar already at 0% so the UI feels instant and cohesive
+            MorgenDaten.Segment dummy = new MorgenDaten.Segment();
+            dummy.gruppe = 0; dummy.gruppeI = 0; dummy.gruppeN = 1;
+            zeichneSegmentLeiste(c, dummy, 0f);
+
+            String firstLbl = !status.gruppen.isEmpty() ? status.gruppen.get(0).label : "Mein Tag";
+            int grpN = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
+            zeichneKopfZeile(c, 0xFF6FB3F2, firstLbl, "Startet gleich …", "Segment 1 von " + grpN);
+
+            // Calm centered animated wave + label
+            float cx = W * .5f, cy = H * .47f;
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFF7AB8F5);
+            for (int k = 0; k < 7; k++) {
+                float ph = animS * (3.4f + k * 0.4f) + k * 0.7f;
+                float bh = 12f + 26f * (float) (.5 + .5 * Math.sin(ph));
+                float bx = cx - 42 + k * 12f;
+                rf.set(bx, cy - bh * .5f, bx + 6f, cy + bh * .5f);
+                c.drawRoundRect(rf, 3, 3, p);
+            }
+            txt.setTextAlign(Paint.Align.CENTER);
+            txt.setTypeface(tfLight); txt.setTextSize(26); txt.setColor(0xF0FFFFFF);
+            c.drawText("Dein Briefing wird vorbereitet …", cx, cy + 54, txt);
+            if (!status.modusLabel.isEmpty()) {
+                txt.setTypeface(tfNorm); txt.setTextSize(14); txt.setColor(0x99DCE6F0);
+                c.drawText(status.modusLabel, cx, cy + 80, txt);
+            }
+            txt.setTextAlign(Paint.Align.LEFT);
+
+            // Bottom stop pill only
+            float y = 502;
+            p.setStyle(Paint.Style.FILL); p.setColor(0x18FFFFFF);
+            c.drawRect(28, y - 14, W - 28, y - 13, p);
+            zeichneSteuerKnopf(c, "stopp", 935, y + 2, "Stopp", 0x2EE85C52, 0x6EF28078, 0xFFF5B5B0);
         }
 
         // ==== UNIFIED STORY PLAYER ==================================================================================
