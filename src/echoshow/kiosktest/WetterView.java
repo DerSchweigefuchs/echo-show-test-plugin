@@ -186,7 +186,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private volatile SchonerDaten.Optionen schonerOpt;
     private volatile SchonerDaten.Zustand schonerZustand;
     private volatile String ortWahl = "auto";
-    private String ort = "meer", testCond;
+    private String ort = "meer", testCond, vorschauZeit;
     private Runnable tapAktion;
     private int tagNrAktuell;
     private int monat = Calendar.getInstance().get(Calendar.MONTH);
@@ -595,8 +595,45 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     /** Optional tap callback in preview mode (e.g. toggle interactive control bar). */
     void setTapAktion(Runnable r) { tapAktion = r; }
 
+    /** Settings-driven preview override (like KS Weather Mood preview): active, landscape, weather condition, time-of-day preset. */
+    void setEinstellungsVorschau(boolean aktiv, String neuOrt, String neuCond, String zeitStufe) {
+        if (!aktiv) {
+            vorschauZeit = null;
+            testCond = null;
+            if (!"fest".equals(modus) || festZeit == 0) modus = "live";
+            String eff = daten == null ? "cloudy" : daten.zustand;
+            if (!eff.equals(lage.cond)) {
+                lage = new WetterLage(eff);
+                partikel();
+            }
+            momentUm = -1;
+            himmelKey = "";
+            invalidate();
+            return;
+        }
+        if (neuOrt != null && !neuOrt.isEmpty()) ortWahl = neuOrt.trim().toLowerCase(Locale.ROOT);
+        vorschauZeit = zeitStufe;
+        if ("zeitraffer".equals(zeitStufe)) {
+            if (!"zeitraffer".equals(modus)) rafferStart = System.currentTimeMillis();
+            modus = "zeitraffer";
+        } else {
+            modus = "live";
+        }
+        String zielCond = neuCond == null || "live".equals(neuCond) ? null : neuCond;
+        testCond = zielCond;
+        String eff = zielCond != null ? zielCond : (daten == null ? "cloudy" : daten.zustand);
+        if (!eff.equals(lage.cond)) {
+            lage = new WetterLage(eff);
+            partikel();
+        }
+        momentUm = -1;
+        himmelKey = "";
+        invalidate();
+    }
+
     /** Live interactive preview overrides: time mode ("live"|"zeitraffer"|"fest"), "HH:MM", landscape, weather condition ("live"|cond). */
     void setVorschau(String neuModus, String uhr, String neuOrt, String neuCond) {
+        vorschauZeit = null;
         if (neuOrt != null) ortWahl = neuOrt.trim().toLowerCase(Locale.ROOT);
         if ("zeitraffer".equals(neuModus)) {
             if (!"zeitraffer".equals(modus)) rafferStart = simZeit > 0 ? simZeit : System.currentTimeMillis();
@@ -1039,6 +1076,16 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             sonneAlt = 30;
             sonneAz = 180;
             mond = null;
+        }
+        if (vorschauZeit != null && !"zeitraffer".equals(vorschauZeit)) {
+            switch (vorschauZeit) {
+                case "morgen": sonneAlt = 1.5; sonneAz = 100; steigt = true; break;
+                case "tag": sonneAlt = 42; sonneAz = 195; steigt = false; break;
+                case "abend": sonneAlt = 1.2; sonneAz = 260; steigt = false; break;
+                case "blau": sonneAlt = -5.5; sonneAz = 278; steigt = false; break;
+                case "nacht": sonneAlt = -22; sonneAz = 0; steigt = false; break;
+                default: break;
+            }
         }
         licht = lage.licht(sonneAlt, steigt);
         sx = Himmel.x(sonneAz);

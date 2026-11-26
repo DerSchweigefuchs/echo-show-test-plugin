@@ -59,6 +59,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile boolean verlaufCache = true;
     private volatile String wetterEntity = "";
     private volatile String szeneOrt = "auto";
+    private volatile boolean vorschauAktiv;
+    private volatile String vorschauOrt = "meer";
+    private volatile String vorschauWetter = "cloudy";
+    private volatile String vorschauZeit = "tag";
     private volatile boolean sternbildNamen = true;
     private volatile int wetterFps = 30;
     private volatile SchonerDaten.Optionen schonerOpt = new SchonerDaten.Optionen();
@@ -131,6 +135,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         wetterEntity = text(s.get("wetterEntity"), "");
         String ortCfg = text(s.get("szeneOrt"), "täglich wechseln").toLowerCase(Locale.ROOT);
         szeneOrt = "täglich wechseln".equals(ortCfg) ? "auto" : ortCfg;
+        vorschauAktiv = Boolean.TRUE.equals(s.get("vorschauAktiv"));
+        vorschauOrt = text(s.get("vorschauOrt"), "meer").toLowerCase(Locale.ROOT);
+        vorschauWetter = wetterKey(text(s.get("vorschauWetter"), "Bewölkt"));
+        vorschauZeit = zeitKey(text(s.get("vorschauZeit"), "Tag"));
         sternbildNamen = !Boolean.FALSE.equals(s.get("sternbildNamen"));
         wetterFps = "24".equals(s.get("wetterFps")) ? 24 : 30;
         wetterAbgleichen();
@@ -148,6 +156,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         schonerAbgleichen();
         schonerOptionenMelden(opt);
         szeneOrtMelden(szeneOrt);
+        vorschauMelden();
         status();
     }
 
@@ -584,6 +593,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             WetterLage.Daten wd = wetterDaten;
             if (wd != null) v.setDaten(wd);
             v.setOrt(szeneOrt);
+            if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
             v.setSchoner(schonerZustand);
             synchronized (EchoShowTestPlugin.this) { schonerView = v; }
             return v;
@@ -686,6 +696,57 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setOrt(ort)));
         if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.szeneOrtSetzen(ort)));
+    }
+
+    private void vorschauMelden() {
+        final boolean ak = vorschauAktiv;
+        final String vo = vorschauOrt, vw = vorschauWetter, vz = vorschauZeit, stdOrt = szeneOrt;
+        WetterView sv;
+        TestAnsicht a;
+        synchronized (this) {
+            sv = schonerView;
+            a = aktuell != null && ("wetter".equals(aktuell.m.ansicht) || "schoner".equals(aktuell.m.ansicht)) ? aktuell : null;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> {
+            sv.setOrt(ak ? vo : stdOrt);
+            sv.setEinstellungsVorschau(ak, vo, vw, vz);
+        }));
+        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.vorschauSetzen(ak, ak ? vo : stdOrt, vw, vz)));
+    }
+
+    void vorschauAnwenden(WetterView v) {
+        v.setOrt(vorschauAktiv ? vorschauOrt : szeneOrt);
+        if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
+    }
+
+    private static String wetterKey(String label) {
+        switch (label.toLowerCase(Locale.ROOT)) {
+            case "sonnig": return "sunny";
+            case "leicht bewölkt": return "partlycloudy";
+            case "bewölkt": return "cloudy";
+            case "regen": return "rainy";
+            case "starkregen": return "pouring";
+            case "gewitter": return "lightning-rainy";
+            case "schnee": return "snowy";
+            case "schneeregen": return "snowy-rainy";
+            case "hagel": return "hail";
+            case "nebel": return "fog";
+            case "windig": return "windy";
+            case "klar": return "clear-night";
+            default: return "cloudy";
+        }
+    }
+
+    private static String zeitKey(String label) {
+        switch (label.toLowerCase(Locale.ROOT)) {
+            case "morgendämmerung": return "morgen";
+            case "tag": return "tag";
+            case "abenddämmerung": return "abend";
+            case "blaue stunde": return "blau";
+            case "nacht": return "nacht";
+            case "zeitraffer (24h)": return "zeitraffer";
+            default: return "tag";
+        }
     }
 
     boolean wetterPausiert() { return schonerAktiv || bildschirmAus; }

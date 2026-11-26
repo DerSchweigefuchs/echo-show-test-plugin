@@ -89,6 +89,14 @@ final class TestAnsicht implements OverlayFactory {
         if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setOrt(ort);
     }
 
+    /** Main thread: settings-driven weather/time/landscape preview toggled or changed. */
+    void vorschauSetzen(boolean aktivV, String ort, String cond, String zeit) {
+        if (aktiv != null && aktiv.wetterView != null) {
+            aktiv.wetterView.setOrt(ort);
+            aktiv.wetterView.setEinstellungsVorschau(aktivV, ort, cond, zeit);
+        }
+    }
+
     /** Main thread: screensaver or screen changed (the weather scene pauses). */
     void pauseGeaendert() {
         if (aktiv != null) aktiv.wetterPause();
@@ -292,7 +300,7 @@ final class TestAnsicht implements OverlayFactory {
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
-            wetterView.setOrt(plugin.szeneOrt());
+            plugin.vorschauAnwenden(wetterView);
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             wetterFuellen();
         }

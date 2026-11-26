@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
@@ -208,6 +208,68 @@
       ],
       "group": "Bildschirmschoner",
       "description": "Sparsame Bildrate im Schoner bei klarem oder bewölktem Wetter (bei Regen, Schnee, Wind oder Gewitter automatisch 24 fps)."
+    },
+    {
+      "key": "vorschauAktiv",
+      "type": "boolean",
+      "title": "Wettervorschau aktivieren",
+      "default": false,
+      "group": "Wettervorschau",
+      "description": "Zeigt die ausgewählte Landschaft, Wetterlage und Tageszeit statt des aktuellen Wetters. Deaktivieren, um wieder Home Assistant zu folgen."
+    },
+    {
+      "key": "vorschauOrt",
+      "type": "select",
+      "title": "Landschaft",
+      "default": "meer",
+      "options": [
+        "meer",
+        "tal",
+        "see",
+        "lichtung",
+        "gipfel",
+        "felder"
+      ],
+      "group": "Wettervorschau",
+      "description": "Der Hintergrund für die Vorschau."
+    },
+    {
+      "key": "vorschauWetter",
+      "type": "select",
+      "title": "Wettertyp",
+      "default": "Bewölkt",
+      "options": [
+        "Sonnig",
+        "Leicht bewölkt",
+        "Bewölkt",
+        "Regen",
+        "Starkregen",
+        "Gewitter",
+        "Schnee",
+        "Schneeregen",
+        "Hagel",
+        "Nebel",
+        "Windig",
+        "Klar"
+      ],
+      "group": "Wettervorschau",
+      "description": "Die animierte Wetterszene für die Vorschau."
+    },
+    {
+      "key": "vorschauZeit",
+      "type": "select",
+      "title": "Tageszeit",
+      "default": "Tag",
+      "options": [
+        "Morgendämmerung",
+        "Tag",
+        "Abenddämmerung",
+        "Blaue Stunde",
+        "Nacht",
+        "Zeitraffer (24h)"
+      ],
+      "group": "Wettervorschau",
+      "description": "Die Szene bei Morgendämmerung, Tag, Abenddämmerung, blauer Stunde, Nacht oder im 24h-Zeitraffer anzeigen."
     },
     {
       "key": "uebergang",
