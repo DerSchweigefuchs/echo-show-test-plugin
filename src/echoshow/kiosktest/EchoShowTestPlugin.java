@@ -57,6 +57,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     // weather data (live render_template), screensaver / screen for the scene's pause
     private volatile WetterLage.Daten wetterDaten;
     private volatile boolean schonerAktiv, bildschirmAus;
+    private volatile boolean schonerEventDa, bildschirmEventDa;
+    private boolean zustandAbos;
 
     // presence data (worker thread writes, views read immutable snapshots)
     private String personenAboFuer;                    // template of the people subscription (to notice setting changes)
@@ -148,11 +150,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         else if (("ks.ha.subscription." + PERSONEN).equals(event)) personenEreignis(payload);
         else if (("ks.ha.subscription." + WETTER).equals(event)) wetterEreignis(payload);
         else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
-            if ("ks.screensaver.state".equals(event)) schonerAktiv = Boolean.TRUE.equals(payload.get("active"));
-            else bildschirmAus = Boolean.FALSE.equals(payload.get("on"));
-            TestAnsicht a;
-            synchronized (this) { a = aktuell; }
-            if (a != null) main().post(() -> TestAnsicht.sicher(a::pauseGeaendert));
+            if ("ks.screensaver.state".equals(event)) {
+                schonerEventDa = true;
+                schonerAktiv = Boolean.TRUE.equals(payload.get("active"));
+            } else {
+                bildschirmEventDa = true;
+                bildschirmAus = Boolean.FALSE.equals(payload.get("on"));
+            }
+            pauseMelden();
         }
         else if ("overlay.closed".equals(event) && OVERLAY.equals(payload.get("key"))) {
             synchronized (this) { aktuell = null; }   // back gesture; the view's onDestroy records the result
@@ -171,6 +176,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             // nothing was built
         }
         personenAboFuer = null;
+        zustandAbos = false;
+        schonerEventDa = bildschirmEventDa = false;
     }
 
     // ---- echo_show/ansicht subscription ---------------------------------------------------------------------------
@@ -460,13 +467,32 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         Map<String, Object> msg = h.isHeadless() ? null : WetterLage.abo(wetterEntity);
         String soll = msg == null ? null : (String) msg.get("template");
         aboWetter.setzen(h, msg, soll);
-        if (h.isHeadless()) return;
-        try {   // pause the scene under the screensaver and with the screen off
+        if (h.isHeadless() || zustandAbos) return;
+        zustandAbos = true;
+        try {   // pause the scene under the screensaver and with the screen off (subscribe first, then read initial state)
             h.subscribe("screensaver.state");
             h.subscribe("screen.state");
+            h.executeCommand("isScreensaverActive", Collections.<String, Object>emptyMap(), (ok, data, error) -> {
+                if (ok && !schonerEventDa) {
+                    schonerAktiv = Boolean.TRUE.equals(data);
+                    pauseMelden();
+                }
+            });
+            h.executeCommand("isScreenOn", Collections.<String, Object>emptyMap(), (ok, data, error) -> {
+                if (ok && !bildschirmEventDa) {
+                    bildschirmAus = Boolean.FALSE.equals(data);
+                    pauseMelden();
+                }
+            });
         } catch (RuntimeException ignored) {
             // without host.read the scene only pauses when its view is hidden
         }
+    }
+
+    private void pauseMelden() {
+        TestAnsicht a;
+        synchronized (this) { a = aktuell; }
+        if (a != null) main().post(() -> TestAnsicht.sicher(a::pauseGeaendert));
     }
 
     private void wetterEreignis(Map<String, Object> p) {

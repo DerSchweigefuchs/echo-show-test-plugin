@@ -142,8 +142,7 @@ final class TestAnsicht implements OverlayFactory {
                 @Override public void onViewDetachedFromWindow(View v) {}
             });
             if (root.isAttachedToWindow()) angehaengt();
-            zaehler.start();
-            handler.postDelayed(sekunde, 1000);
+            pauseAbgleichen();
         }
 
         private void angehaengt() {
@@ -283,8 +282,21 @@ final class TestAnsicht implements OverlayFactory {
             if (m.wetter != null) wetterView.setDaten(m.wetter);
         }
 
-        /** Main thread: screensaver or screen changed. */
+        /** Main thread: screensaver or screen changed. Pause both the weather scene and the frame counter. */
         void wetterPause() {
+            pauseAbgleichen();
+        }
+
+        private void pauseAbgleichen() {
+            if (zerstoert) return;
+            if (plugin.wetterPausiert()) {
+                zaehler.stop();
+                handler.removeCallbacks(sekunde);
+            } else {
+                zaehler.start();
+                handler.removeCallbacks(sekunde);
+                handler.postDelayed(sekunde, 1000);
+            }
             if (wetterView != null) wetterView.pauseGeaendert();
         }
 

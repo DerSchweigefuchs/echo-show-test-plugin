@@ -2,9 +2,11 @@ package echoshow.kiosktest;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.LightingColorFilter;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PorterDuff;
@@ -60,13 +62,16 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     // ==== layers shared by all open views (main thread; builds run on one background thread) ===========================
 
     private static final class Ebenen {
-        int nutzer;                         // attached views
+        int aktiv;                          // running (visible, unpaused) views
         String wolkenKey = "", bautKey;     // built / being built
+        long wolkenFehlerBis, figurFehlerBis;   // backoff after a failed background build
         List<Wolken.Reihe> reihen = new ArrayList<>();
         Bitmap[] wolken = new Bitmap[0];
-        float[] wolkenQ = new float[0], wolkenY0 = new float[0];
+        BitmapShader[] wolkenShader = new BitmapShader[0];
+        float[] wolkenY0 = new float[0], wolkenY1 = new float[0];
         Bitmap[] vorher;                    // the previous set while it fades out
-        float[] vorherQ, vorherY0;
+        BitmapShader[] vorherShader;
+        float[] vorherY0, vorherY1;
         List<Wolken.Reihe> vorherReihen;
         long wechselSeit;                   // uptime of the last swap
         int version;                        // counts swaps, so views rebuild their row filters
@@ -107,12 +112,12 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         if (bauer != null) bauer.shutdownNow();
         bauer = null;
         haupt().post(() -> {
-            if (E.nutzer == 0) allesFrei();
+            if (E.aktiv == 0) allesFrei();
         });
     }
 
     private static void allesFrei() {
-        if (E.nutzer > 0) return;
+        if (E.aktiv > 0) return;
         recyceln(E.wolken);
         recyceln(E.vorher);
         for (Object[] a : E.alt) recyceln((Bitmap[]) a[0]);
@@ -125,11 +130,16 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         E.figurBaut = null;
         E.mondKey = "";
         E.wolken = new Bitmap[0];
-        E.wolkenQ = E.wolkenY0 = new float[0];
+        E.wolkenShader = new BitmapShader[0];
+        E.wolkenY0 = E.wolkenY1 = new float[0];
         E.reihen = new ArrayList<>();
         E.vorher = null;
+        E.vorherShader = null;
+        E.vorherY0 = E.vorherY1 = null;
+        E.vorherReihen = null;
         E.wolkenKey = "";
         E.bautKey = null;
+        E.wolkenFehlerBis = E.figurFehlerBis = 0;
     }
 
     private static void recyceln(Bitmap[] b) {
@@ -232,6 +242,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private final Shader turmGlut = new RadialGradient(112, 173, 10, 0xBFFFC86E, 0x00FFC86E, Shader.TileMode.CLAMP);
     private final Shader ausblenden = new LinearGradient(0, 292, 0, UNTEN, 0x000D1720, 0xFF0D1720, Shader.TileMode.CLAMP);
     private final RectF r = new RectF();
+    private final Matrix wolkenMatrix = new Matrix();
     private float skala = 1, dx, dy, downX, downY;
 
     // ==== geometry built once (the GPU keeps static paths; nothing is re-filled per frame) ============================
@@ -389,16 +400,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         angehaengt = true;
-        E.nutzer++;
-        haupt().removeCallbacks(FREIGABE);
         schleife();
     }
 
     @Override protected void onDetachedFromWindow() {
         angehaengt = false;
         schleife();
-        E.nutzer = Math.max(0, E.nutzer - 1);
-        if (E.nutzer == 0) {
+        if (E.aktiv == 0) {
             haupt().removeCallbacks(FREIGABE);
             haupt().postDelayed(FREIGABE, FREIGABE_MS);
         }
@@ -422,11 +430,18 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         laeuft = soll;
         Choreographer ch = Choreographer.getInstance();
         if (soll) {
+            E.aktiv++;
+            haupt().removeCallbacks(FREIGABE);
             letzterFrame = 0;
             letzteZeichnung = 0;
             ch.postFrameCallback(this);
         } else {
             ch.removeFrameCallback(this);
+            E.aktiv = Math.max(0, E.aktiv - 1);
+            if (E.aktiv == 0) {
+                haupt().removeCallbacks(FREIGABE);
+                haupt().postDelayed(FREIGABE, FREIGABE_MS);
+            }
         }
     }
 
@@ -725,7 +740,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         if (lage.cover > 0) {
             int stufe = Math.round(L.tag * FARBSTUFEN);
             String wk = wolkenGrund() + stufe;
-            if (!wk.equals(E.wolkenKey) && !wk.equals(E.bautKey) && E.bautKey == null) wolkenBauen(wk, stufe);
+            if (!wk.equals(E.wolkenKey) && !wk.equals(E.bautKey) && E.bautKey == null && anim >= E.wolkenFehlerBis) wolkenBauen(wk, stufe);
             if (stufe != tagStufe || version != E.version) {
                 tagStufe = stufe;
                 version = E.version;
@@ -736,7 +751,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         if (figurCfg != null) {
             WetterLage.Licht fl = figurLicht(L);
             figurKey = figurCfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skala;
-            if (!figurKey.equals(E.figurKey) && E.figurBaut == null) figurBauen(figurKey, figurCfg, fl, skala);
+            if (!figurKey.equals(E.figurKey) && E.figurBaut == null && anim >= E.figurFehlerBis) figurBauen(figurKey, figurCfg, fl, skala);
         }
         String hk = Math.round(Math.max(-15, Math.min(15, sonneAlt)) * 20) + (steigt ? "s" : "f") + lage.cond + mondDa;
         if (!hk.equals(himmelKey) || himmelShader == null) {
@@ -800,7 +815,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 haupt().post(() -> {
                     if (!key.equals(E.figurBaut)) return;
                     E.figurBaut = null;
-                    if (fr == null) return;
+                    if (fr == null) {
+                        E.figurFehlerBis = SystemClock.uptimeMillis() + 5_000L;
+                        return;
+                    }
+                    E.figurFehlerBis = 0;
                     if (E.figur != null) spaeterRecyceln(E.figur);
                     E.figur = (Bitmap[]) fr[0];
                     E.figurLage = (float[][]) fr[1];
@@ -871,18 +890,29 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 haupt().post(() -> {
                     if (!key.equals(E.bautKey)) return;
                     E.bautKey = null;
-                    if (fb == null) return;
+                    if (fb == null) {
+                        E.wolkenFehlerBis = SystemClock.uptimeMillis() + 5_000L;
+                        return;
+                    }
+                    E.wolkenFehlerBis = 0;
                     if (E.wolken.length > 0) {   // the old set fades out over the new one
                         spaeterRecyceln(E.vorher);
                         E.vorher = E.wolken;
-                        E.vorherQ = E.wolkenQ;
+                        E.vorherShader = E.wolkenShader;
                         E.vorherY0 = E.wolkenY0;
+                        E.vorherY1 = E.wolkenY1;
                         E.vorherReihen = E.reihen;
                     }
                     E.reihen = frh;
-                    E.wolken = (Bitmap[]) fb[0];
-                    E.wolkenQ = (float[]) fb[1];
-                    E.wolkenY0 = (float[]) fb[2];
+                    Bitmap[] neu = (Bitmap[]) fb[0];
+                    BitmapShader[] sh = new BitmapShader[neu.length];
+                    for (int i = 0; i < neu.length; i++) {
+                        if (neu[i] != null) sh[i] = new BitmapShader(neu[i], Shader.TileMode.REPEAT, Shader.TileMode.CLAMP);
+                    }
+                    E.wolken = neu;
+                    E.wolkenShader = sh;
+                    E.wolkenY0 = (float[]) fb[1];
+                    E.wolkenY1 = (float[]) fb[2];
                     E.wolkenKey = key;
                     E.wechselSeit = SystemClock.uptimeMillis();
                     E.version++;
@@ -1097,6 +1127,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     }
 
     private void wolken(Canvas c, float t, long anim) {
+        if (lage.cover <= 0) return;
         float tag = licht.tag;
         if (deckBlau != null && tag > 0) {
             mitShader(deckBlau);
@@ -1115,33 +1146,35 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         float ein = wolkenAlpha(anim);
         if (ein <= 0) return;
         float wechsel = Math.min(1, (anim - E.wechselSeit) / 1500f);
-        if (E.vorher != null && wechsel < 1) reihenZeichnen(c, t, E.vorherReihen, E.vorher, E.vorherQ, E.vorherY0, ein);
+        if (E.vorher != null && wechsel < 1) reihenZeichnen(c, anim, E.vorherReihen, E.vorher, E.vorherShader, E.vorherY0, E.vorherY1, ein);
         else if (E.vorher != null) {
             spaeterRecyceln(E.vorher);
             E.vorher = null;
+            E.vorherShader = null;
+            E.vorherY0 = E.vorherY1 = null;
+            E.vorherReihen = null;
         }
-        reihenZeichnen(c, t, E.reihen, E.wolken, E.wolkenQ, E.wolkenY0, E.vorher != null ? ein * wechsel : ein);
+        reihenZeichnen(c, anim, E.reihen, E.wolken, E.wolkenShader, E.wolkenY0, E.wolkenY1, E.vorher != null ? ein * wechsel : ein);
     }
 
-    private void reihenZeichnen(Canvas c, float t, List<Wolken.Reihe> rh, Bitmap[] bm, float[] q, float[] y0, float alpha) {
+    private void reihenZeichnen(Canvas c, long anim, List<Wolken.Reihe> rh, Bitmap[] bm, BitmapShader[] sh, float[] y0, float[] y1, float alpha) {
+        bild.setColor(0xFFFFFFFF);
+        bild.setAlpha(Math.round(255 * alpha));
         for (int i = 0; i < rh.size() && i < bm.length; i++) {
             Bitmap b = bm[i];
-            if (b == null || b.isRecycled()) continue;
+            BitmapShader s = sh != null && i < sh.length ? sh[i] : null;
+            if (b == null || b.isRecycled() || s == null) continue;
             Wolken.Reihe reihe = rh.get(i);
             float tempo = lage.schnell ? 1700f / reihe.dauer : 600f / reihe.dauer;   // px per s, far rows slower
-            float o = (t * tempo) % Wolken.BREITE, k = 1 / (skala * q[i]);
+            float o = (float) ((anim * .001 * tempo) % Wolken.BREITE);
+            wolkenMatrix.setScale(Wolken.BREITE / b.getWidth(), (y1[i] - y0[i]) / b.getHeight());
+            wolkenMatrix.postTranslate(o, y0[i]);
+            s.setLocalMatrix(wolkenMatrix);
+            bild.setShader(s);
             bild.setColorFilter(i < wolkenFilter.length ? wolkenFilter[i] : null);
-            bild.setAlpha(Math.round(255 * alpha));
-            for (int kopie = 0; kopie < 2; kopie++) {
-                float x0 = o - Wolken.BREITE * kopie;
-                if (x0 > W || x0 + Wolken.BREITE < 0) continue;
-                c.save();
-                c.translate(x0, y0[i]);
-                c.scale(k, k);
-                c.drawBitmap(b, 0, 0, bild);
-                c.restore();
-            }
+            c.drawRect(0, y0[i], W, y1[i], bild);
         }
+        bild.setShader(null);
         bild.setColorFilter(null);
         bild.setAlpha(255);
     }
@@ -1501,12 +1534,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
      * ~1 px, so a row keeps 1 / blur bitmap pixels per page pixel (at most half the screen's). Like the page, the finished
      * silhouette is blurred, not each puff: the row is drawn at up to four times that resolution and halved once or twice
      * with bilinear filtering (each halving averages 2 x 2 pixels, a box blur done by Skia, no pixel loops in Java); the
-     * large bitmap is given back at once. Only the band of y the row covers is kept. Colours of one moment (tag).
-     * Returns {Bitmap[], float[] q (bitmap px per page px), float[] y0 (page y of the band)}.
+     * large bitmap is given back at once. Only the band of y the row covers is kept (with enough transparent margin for
+     * downsampling and bilinear upscaling). Colours of one moment (tag).
+     * Returns {Bitmap[], float[] y0 (top page y of the band), float[] y1 (bottom page y of the band)}.
      */
     static Object[] wolkenBilder(List<Wolken.Reihe> rh, WetterLage lg, boolean mond, float sk, float tag) {
         Bitmap[] out = new Bitmap[rh.size()];
-        float[] qs = new float[rh.size()], y0s = new float[rh.size()];
+        float[] y0s = new float[rh.size()], y1s = new float[rh.size()];
         int[] wt = Wolken.farben(lg, false, mond), wn = Wolken.farben(lg, true, mond);
         int[] wp = new int[4];
         for (int i = 0; i < 4; i++) wp[i] = WetterLage.mix(wn[i], wt[i], tag);
@@ -1518,20 +1552,22 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             float qZiel = Math.max(.2f, Math.min(sk * .5f, 1 / reihe.blur));
             int stufen = 0;   // halvings: as many as fit under 0.75 of the screen's resolution, at most two
             while (stufen < 2 && qZiel * (1 << (stufen + 1)) <= sk * .75f) stufen++;
-            float q = qZiel * (1 << stufen);
             float yMin = Float.MAX_VALUE, yMax = 0;
             for (Wolken.Haufen h : reihe.haufen) {
                 yMin = Math.min(yMin, Math.min(h.top, h.by - h.h * 1.15f));
                 yMax = Math.max(yMax, h.by);
             }
-            yMin = Math.max(0, yMin - 2);
-            yMax = Math.min(Wolken.YH + 20, yMax + 2);
+            float rand = Math.max(4f, 2f / qZiel);   // at least two final bitmap pixels so blur / bilinear upscale never clips
+            yMin = Math.max(0, yMin - rand);
+            yMax = Math.min(UNTEN, yMax + rand);
             if (yMax <= yMin) continue;
             float dd = reihe.d * .6f;
             int hi = WetterLage.mix(wp[0], wp[3], dd), bo = WetterLage.mix(wp[1], wp[3], dd), sh = WetterLage.mix(wp[2], wp[3], dd);
-            Bitmap b = Bitmap.createBitmap(Math.max(1, Math.round(Wolken.BREITE * q)), Math.max(1, Math.round((yMax - yMin) * q)), Bitmap.Config.ARGB_8888);
+            int wEnd = Math.max(1, Math.round(Wolken.BREITE * qZiel)), hEnd = Math.max(1, Math.round((yMax - yMin) * qZiel));
+            int w0 = wEnd << stufen, h0 = hEnd << stufen;   // exact power-of-two multiples so every halving is a true 2 x 2 box average
+            Bitmap b = Bitmap.createBitmap(w0, h0, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(b);
-            c.scale(q, q);
+            c.scale(w0 / Wolken.BREITE, h0 / (yMax - yMin));
             c.translate(0, -yMin);
             for (int pass = 0; pass < 2; pass++) {
                 pp.setXfermode(pass == 1 ? atop : null);
@@ -1561,16 +1597,16 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             }
             Paint filter = new Paint(Paint.FILTER_BITMAP_FLAG);
             for (int st = 0; st < stufen; st++) {
-                Bitmap h = Bitmap.createBitmap(Math.max(1, (b.getWidth() + 1) / 2), Math.max(1, (b.getHeight() + 1) / 2), Bitmap.Config.ARGB_8888);
+                Bitmap h = Bitmap.createBitmap(b.getWidth() / 2, b.getHeight() / 2, Bitmap.Config.ARGB_8888);
                 new Canvas(h).drawBitmap(b, null, new Rect(0, 0, h.getWidth(), h.getHeight()), filter);
                 b.recycle();
                 b = h;
             }
             out[i] = b;
-            qs[i] = b.getWidth() / Wolken.BREITE;
             y0s[i] = yMin;
+            y1s[i] = yMax;
         }
-        return new Object[] {out, qs, y0s};
+        return new Object[] {out, y0s, y1s};
     }
 
     /** The moon as on the page: glow, the dark disc, the lit part (turned by the real limb), maria on the lit part. */
