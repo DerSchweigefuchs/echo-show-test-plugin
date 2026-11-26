@@ -13,6 +13,7 @@ Fünf native Vollbild-Ansichten über dem Dashboard plus ein nativer Kiosk-Satel
 | `anwesenheit` | Nachbau einer Lovelace-Anwesenheitsseite als schwerer Vergleichstest: Personenkarten, Zeitleiste 0–24 Uhr und Woche, auf einem Canvas gezeichnet |
 | `wetter` | Live-Wetterszene am Meer: Himmel nach der echten Sonnenhöhe, Sonne, Mond, Sterne, ziehende Wolken, Regen und Schnee, auf einem Canvas gezeichnet |
 | `schoner` | Vollbild-Vorschau des nativen Bildschirmschoners „Wetterszene“ (oder direkt in Kiosk Satellite unter **Screensaver → Screensaver mode → Wetterszene (Echo Show Test-Ansichten)** auswählbar) |
+| `morgen` | Nativer Ablauf **„Mein Tag“** und Nachrichten-Vorlese-Ansicht: 6-Landschaften-Wetterszene, Begrüßung, Tages-Chips (Regenschirm, Glätte, Termine, Müll, Einkaufsliste), Heute-Stundenverlauf (Temperaturkurve + Regen-Wellenbalken) sowie Live-Karaoke-Leiste und Vollbild-Story-Ansicht mit Steuerung (`echo_show/news/subscribe` & `echo_show/news/steuern`) |
 
 In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwischen Titel und Umschalter, bei `wetter` unter der Szene):
 - Öffnungszeit
@@ -51,16 +52,20 @@ In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwis
 - Alle UI-Elemente lassen sich in den Plugin-Einstellungen unter **Bildschirmschoner** einzeln an- und abschalten: schlanke Uhr (`groß` oder `kompakt`, optional mit Sekunden), Datum, Wetterzeile mit Regen- oder Tageshöchst-/Tiefstwert, bis zu zwei Hinweis-/Warnungskarten oben rechts (`persistent_notification/subscribe` sowie aktive Wetter-/Bevölkerungswarnungen) und eine kompakte Musik-Anzeige unten links mit Album-Cover bei aktivem Media-Player (mit konfigurierbarer Ausschlussliste).
 - Sparsame, VSync-synchronisierte Bildrate ohne 60-Hz-Mikroruckler: bei ruhigem Wetter standardmäßig 15 fps (exakte 60-Hz-Teiler einstellbar), bei Regen, Schnee, Hagel, Wind oder Gewitter flüssige 60 fps (oder 30 fps wählbar). Pausiert sofort, sobald der Bildschirm aus oder die View nicht sichtbar ist.
 
+## Mein Tag & Vorlese-Ansicht
+- Abonniert `echo_show/news/subscribe` (abschaltbar in den Einstellungen unter **Mein Tag**) und öffnet automatisch die native Vollbild-Ansicht, sobald „Mein Tag“ oder eine Nachrichten-Vorlesung startet; nach Ende schließt sie sich nach 2,5 s wieder.
+- **Phase 1 (Briefing & Übersicht):** Live-Wetterszene im Hintergrund, Datum/Uhrzeit, tageszeitabhängige Begrüßung, Temperatur & Wetterlage, kompakte Info-Chips (Schirm, Glätte, Termine, Müll, Einkaufsliste), der **Heute-Stundenverlauf** (8 Stunden mit farbiger Temperaturkurve, Vektor-Wettersymbolen und Regen-Wellenbalken) sowie die schwebende **Vorlese-Karaoke-Leiste** mit animiertem Orb, Wort-für-Wort-Hervorhebung, Pause/Weiter/Stopp und Fortschrittsbalken.
+- **Phase 2 (Nachrichten-Story & „Mehr dazu“):** Vollbild-Story-Ansicht mit GPU-weichgezeichnetem Artikelbild-Hintergrund, Segment-Fortschrittsbalken, Quellen-Chip, großem Karaoke-Text, animierter Sprachwelle, Steuerung (`zurueck`, `pause`/`weiter`, `naechste`, `mehr`, `stopp` über `echo_show/news/steuern`) und „Als Nächstes“-Vorschaukarte.
+- **Demo/Vorschau:** Über `ks://plugin/echo-show-test/morgen/demo`, `/morgen/story` oder `/morgen/mehr` jederzeit ohne laufende Ansage testbar.
+
 ## Abos
-Alle Home-Assistant-Abos (Ansicht-Anfragen, Personen, Wetter, Benachrichtigungen und Schoner-Infos) melden sich selbst neu an, wenn Home Assistant sie beendet oder ablehnt, zum Beispiel nach einem Neustart: nach 5 s, 10 s, 30 s und danach alle 60 s.
+Alle Home-Assistant-Abos (Ansicht-Anfragen, Personen, Wetter, Benachrichtigungen, Schoner-Infos und Nachrichten/Mein Tag) melden sich selbst neu an, wenn Home Assistant sie beendet oder ablehnt, zum Beispiel nach einem Neustart: nach 5 s, 10 s, 30 s und danach alle 60 s.
 
 ## Rechte
 - `overlay`: die Ansichten
 - `screensaver`: nativer Bildschirmschoner „Wetterszene“
-- `ha`: Kalender lesen, Personen und ihren Verlauf lesen, Wetter, Sonne, Heimkoordinaten, Benachrichtigungen, Warnungen und aktive Media-Player lesen, Abo und Meldungen der Echo-Show-Integration
-- `host.read`: freier RAM, Bildschirmschoner und Bildschirm (Pause der Wetterszene)
-
-Das Plugin schreibt nichts in Home Assistant.
+- `ha`: Kalender, Personen/Verlauf, Wetter/Sonne/Heimkoordinaten, Benachrichtigungen, Warnungen, aktive Media-Player, Abo/Meldungen der Echo-Show-Integration sowie Vorlese-Steuerung (`echo_show/news/steuern`)
+- `host.read`: freier RAM, Bildschirmschoner, Bildschirmstatus und Home-Assistant-Basis-URL (für Album-Cover und Artikelbilder)
 
 ## Bauen
 Lokal mit `./build.sh` (JDK 17+, Android SDK). Releases baut GitHub Actions: Ein Tag `v<version>` erstellt das Release und hängt ZIP, Prüfsumme und Manifest an.

@@ -183,6 +183,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private final boolean namen;
     private final int basisFps;
     private final boolean schoner, schonerVorschau;
+    private boolean nurSzene;
     private final SchonerUi schonerUi;
     private final Landschaften landschaften = new Landschaften();
     private volatile SchonerDaten.Optionen schonerOpt;
@@ -615,6 +616,13 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     /** Optional tap callback in preview mode (e.g. toggle interactive control bar). */
     void setTapAktion(Runnable r) { tapAktion = r; }
 
+    /** Scene-only background mode (e.g. for "Mein Tag"): skips the weather header and passes touches to parent. */
+    void setNurSzene(boolean v) {
+        nurSzene = v;
+        setClickable(!v && (!schoner || schonerVorschau));
+        invalidate();
+    }
+
     /** Settings-driven preview override (like KS Weather Mood preview): active, landscape, weather condition, time-of-day preset. */
     void setEinstellungsVorschau(boolean aktiv, String neuOrt, String neuCond, String zeitStufe) {
         if (!aktiv) {
@@ -818,6 +826,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     // ---- touch: back button ------------------------------------------------------------------------------------------
 
     @Override public boolean onTouchEvent(MotionEvent e) {
+        if (nurSzene) return false;
         if (schoner && !schonerVorschau) return super.onTouchEvent(e);   // KS owns touch dismissal for native screensavers
         try {
             if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
@@ -1074,7 +1083,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         c.restore();
         if (schoner && schonerUi != null) {
             if (vorne == null) schonerUi.zeichnen(c, W, viewH, simZeit, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
-        } else {
+        } else if (!nurSzene) {
             kopf(c);
             anzeigen(c);
         }

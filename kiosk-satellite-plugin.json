@@ -3,11 +3,11 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene mit 6 Landschaften und Figur des Tages) sowie nativer Bildschirmschoner „Wetterszene“ mit interaktiver Vorschau (Zeit, Landschaft & Wetter), Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige. Liest Home Assistant nur.",
+  "description": "Native Vollbild-Ansichten (Mein Tag mit Vorlese-Karaoke & Nachrichten-Story, Live-Wetterszene mit 6 Landschaften und Figur des Tages, Kalender, Timer, Liste, Anwesenheit) sowie nativer Bildschirmschoner „Wetterszene“ mit Wettervorschau, Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige.",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [
@@ -285,6 +285,22 @@
       "description": "Die Szene bei Morgendämmerung, Tag, Abenddämmerung, blauer Stunde, Nacht oder im 24h-Zeitraffer anzeigen."
     },
     {
+      "key": "meinTagAuto",
+      "type": "boolean",
+      "title": "„Mein Tag“ automatisch öffnen",
+      "default": true,
+      "group": "Mein Tag",
+      "description": "Abonniert echo_show/news/subscribe und öffnet automatisch die native Ansicht „Mein Tag“ (Landschaft, Tagesinfos, Stundenverlauf & Vorlese-Karaoke), sobald dein Morgen-Ablauf startet."
+    },
+    {
+      "key": "vorlesenAuto",
+      "type": "boolean",
+      "title": "Nachrichten-Vorlese-Ansicht automatisch öffnen",
+      "default": true,
+      "group": "Mein Tag",
+      "description": "Öffnet auch bei vorgelesenen Nachrichten oder Eilmeldungen automatisch die native Vollbild-Story-Ansicht mit Karaoke und Steuerung."
+    },
+    {
       "key": "uebergang",
       "type": "select",
       "title": "Übergang beim Öffnen",
@@ -302,7 +318,11 @@
   "commands": [
     {
       "id": "zeigen",
-      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter, schoner)"
+      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter, schoner, morgen)"
+    },
+    {
+      "id": "morgen",
+      "title": "Mein Tag öffnen (Link: morgen, morgen/demo, morgen/story)"
     },
     {
       "id": "kalender",

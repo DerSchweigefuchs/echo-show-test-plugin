@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
@@ -70,8 +71,19 @@ final class TestAnsicht implements OverlayFactory {
     void datenDa() {
         if (aktiv == null) return;
         if (aktiv.anwView != null) aktiv.anwFuellen();
+        else if (aktiv.morgenView != null) aktiv.morgenWetterFuellen();
         else if (aktiv.wetterView != null) aktiv.wetterFuellen();
         else aktiv.kalenderFuellen();
+    }
+
+    /** Main thread: news / "Mein Tag" reading state updated. */
+    void morgenNewsFuellen(MorgenDaten.NewsStatus st) {
+        if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setNews(st);
+    }
+
+    /** Main thread: downloaded article thumbnail + blurred backdrop arrived. */
+    void morgenBildSetzen(String url, Bitmap scharf, Bitmap weich) {
+        if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setArtikelBild(url, scharf, weich);
     }
 
     /** Main thread: screensaver hints / music updated. */
@@ -87,6 +99,7 @@ final class TestAnsicht implements OverlayFactory {
     /** Main thread: landscape setting updated. */
     void szeneOrtSetzen(String ort) {
         if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setOrt(ort);
+        if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setOrt(ort);
     }
 
     /** Main thread: settings-driven weather/time/landscape preview toggled or changed. */
@@ -94,6 +107,10 @@ final class TestAnsicht implements OverlayFactory {
         if (aktiv != null && aktiv.wetterView != null) {
             aktiv.wetterView.setOrt(ort);
             aktiv.wetterView.setEinstellungsVorschau(aktivV, ort, cond, zeit);
+        }
+        if (aktiv != null && aktiv.morgenView != null) {
+            aktiv.morgenView.setOrt(ort);
+            aktiv.morgenView.setEinstellungsVorschau(aktivV, ort, cond, zeit);
         }
     }
 
@@ -127,6 +144,7 @@ final class TestAnsicht implements OverlayFactory {
         LinearLayout kalenderListe;
         AnwesenheitView anwView;
         WetterView wetterView;
+        MorgenView morgenView;
         String messZeit = "", messFrames = "";
         ScrollView scroll;
         ObjectAnimator autoScroll;
@@ -148,13 +166,14 @@ final class TestAnsicht implements OverlayFactory {
             root.setOrientation(LinearLayout.VERTICAL);
             root.setBackgroundColor(th.color("surface"));
             root.setClickable(true);   // touches stay in the test view
-            // presence, weather and screensaver preview bring their own full-screen layout
-            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht) && !"schoner".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            // presence, weather, screensaver preview and "Mein Tag" bring their own full-screen layout
+            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht) && !"schoner".equals(m.ansicht) && !"morgen".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
             else if ("wetter".equals(m.ansicht)) wetter(inhalt);
             else if ("schoner".equals(m.ansicht)) schoner(inhalt);
+            else if ("morgen".equals(m.ansicht)) morgen(inhalt);
             else if ("timer".equals(m.ansicht)) timer(inhalt);
             else if ("liste".equals(m.ansicht)) liste(inhalt);
             else kalender(inhalt);
@@ -251,6 +270,7 @@ final class TestAnsicht implements OverlayFactory {
                 case "anwesenheit": return "Anwesenheit (nativ)";
                 case "wetter": return "Wetter (nativ)";
                 case "schoner": return "Schoner (nativ)";
+                case "morgen": return "Mein Tag (nativ)";
                 default: return "Kalender (nativ)";
             }
         }
@@ -510,6 +530,29 @@ final class TestAnsicht implements OverlayFactory {
             if (m.wetter != null) wetterView.setDaten(m.wetter);
         }
 
+        private void morgen(FrameLayout inhalt) {
+            morgenView = new MorgenView(ctx, th, new MorgenView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void steuern(String aktion) { plugin.newsSteuern(aktion); }
+                @Override public boolean pausiert() { return plugin.wetterPausiert(); }
+                @Override public void bildBedarf(String bildUrl) { plugin.artikelBildLaden(bildUrl); }
+            }, plugin.szeneOrt(), plugin.sternbildNamen());
+            plugin.vorschauAnwenden(morgenView.wetterView());
+            inhalt.addView(morgenView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            morgenWetterFuellen();
+            Object mo = m.param == null ? null : m.param.get("modus");
+            long now = System.currentTimeMillis();
+            if ("demo".equals(mo)) morgenView.setNews(MorgenDaten.demo(false, false, now));
+            else if ("story".equals(mo)) morgenView.setNews(MorgenDaten.demo(true, false, now));
+            else if ("mehr".equals(mo)) morgenView.setNews(MorgenDaten.demo(true, true, now));
+            else morgenView.setNews(plugin.newsStatus());
+        }
+
+        void morgenWetterFuellen() {
+            if (zerstoert || morgenView == null) return;
+            if (m.wetter != null) morgenView.setWetter(m.wetter);
+        }
+
         /** Main thread: screensaver or screen changed. Pause both the weather scene and the frame counter. */
         void wetterPause() {
             pauseAbgleichen();
@@ -526,6 +569,7 @@ final class TestAnsicht implements OverlayFactory {
                 handler.postDelayed(sekunde, 1000);
             }
             if (wetterView != null) wetterView.pauseGeaendert();
+            if (morgenView != null) morgenView.pauseGeaendert();
         }
 
         // ---- (d) presence -------------------------------------------------------------------------------------
