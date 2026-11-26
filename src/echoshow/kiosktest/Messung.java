@@ -25,6 +25,7 @@ final class Messung {
     volatile long timerEnde;   // uptime at which the countdown reaches 0, set on first create
 
     volatile List<Kalender.Termin> termine;
+    volatile Kalender.Spanne kalenderSpanne;
     volatile String datenFehler;
 
     // anwesenheit: people (render_template) and 7-day history; null while loading

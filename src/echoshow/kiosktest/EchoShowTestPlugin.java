@@ -213,7 +213,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                     if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit, wetter, schoner, morgen", true);
                     return;
                 }
-                oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.get(1) : null), "Befehl");
+                oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.subList(1, args.size()) : Collections.<String>emptyList()), "Befehl");
                 return;
             }
             case "kalender":
@@ -223,7 +223,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             case "wetter":
             case "schoner":
             case "morgen":
-                oeffnen(command, null, false, linkParam(command, args.isEmpty() ? null : args.get(0)), "Befehl");
+                oeffnen(command, null, false, linkParam(command, args), "Befehl");
                 return;
             case "schliessen":
                 schliessen();
@@ -342,9 +342,12 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             Map<?, ?> e = (Map<?, ?>) ev;
             if (!"vorbau".equals(e.get("aktion"))) return;
             Object seite = e.get("seite"), token = e.get("token");
-            // only our own test pages; everything else belongs to the Lovelace dashboard
-            if (!(seite instanceof String) || !((String) seite).startsWith("test-") || !(token instanceof String)) return;
-            String name = ansicht(((String) seite).substring(5));
+            // Handle test-* pages and explicit native view requests (nativ: true from echo_show LLM/view router)
+            if (!(seite instanceof String) || !(token instanceof String)) return;
+            String sName = (String) seite;
+            boolean nativ = Boolean.TRUE.equals(e.get("nativ"));
+            if (!sName.startsWith("test-") && !nativ) return;
+            String name = ansicht(sName.startsWith("test-") ? sName.substring(5) : sName);
             if (name == null) return;
             Map<String, Object> param = new LinkedHashMap<>();
             if (e.get("param") instanceof Map) {
@@ -414,14 +417,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     private void kalenderLaden(PluginHost h, TestAnsicht a) {
         Messung m = a.m;
-        Object tagParam = m.param.get("tag");
-        Calendar tag = Kalender.tag(tagParam instanceof String ? (String) tagParam : null);
+        Kalender.Spanne sp = Kalender.spanne(m.param);
+        m.kalenderSpanne = sp;
         try {
-            h.haCall(Kalender.anfrage(kalender, tag), (ok, data, error) -> {
+            h.haCall(Kalender.anfrage(kalender, sp.start, sp.tageAnzahl), (ok, data, error) -> {
                 m.tDaten = SystemClock.uptimeMillis();
                 if (ok) {
                     try {
-                        m.termine = Kalender.lesen(data, tag);
+                        m.termine = Kalender.lesen(data, sp.start, sp.tageAnzahl);
                     } catch (RuntimeException e) {
                         m.datenFehler = "Antwort unlesbar";
                     }
@@ -1407,16 +1410,34 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         return null;
     }
 
-    /** Second link argument: seconds for the timer, yyyy-MM-dd for the calendar. Anything else is ignored. */
-    static Map<String, Object> linkParam(String ansicht, String arg) {
+    /** Link arguments: e.g. timer/90, kalender/wochenende, wetter/woche/2026-11-28,2026-11-29, morgen/demo. */
+    static Map<String, Object> linkParam(String ansicht, List<String> rest) {
         Map<String, Object> p = new LinkedHashMap<>();
-        if (arg == null) return p;
-        String a = arg.trim();
-        if ("timer".equals(ansicht) && a.matches("\\d{1,5}")) p.put("sekunden", Integer.parseInt(a));
-        else if ("kalender".equals(ansicht) && Kalender.TAG.matcher(a).matches()) p.put("tag", a);
-        else if (("wetter".equals(ansicht) || "schoner".equals(ansicht)) && "zeitraffer".equals(a)) p.put("modus", "zeitraffer");
-        else if (("wetter".equals(ansicht) || "schoner".equals(ansicht)) && a.matches("([01]?\\d|2[0-3]):[0-5]\\d")) p.put("uhr", a);
-        else if ("morgen".equals(ansicht) && ("demo".equals(a) || "story".equals(a) || "mehr".equals(a))) p.put("modus", a);
+        if (rest == null || rest.isEmpty()) return p;
+        String a = rest.get(0) == null ? "" : rest.get(0).trim();
+        String b = rest.size() > 1 && rest.get(1) != null ? rest.get(1).trim() : "";
+        if ("timer".equals(ansicht) && a.matches("\\d{1,5}")) {
+            p.put("sekunden", Integer.parseInt(a));
+        } else if ("kalender".equals(ansicht)) {
+            if ("wochenende".equals(a) || "woche".equals(a) || "tag".equals(a)) p.put("zeitraum", a);
+            else if (Kalender.TAG.matcher(a).matches()) p.put("tag", a);
+            else if (a.contains(",") && a.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})+")) p.put("tage", a);
+            if (!b.isEmpty()) {
+                if (Kalender.TAG.matcher(b).matches()) p.put("tag", b);
+                else if (b.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})*")) p.put("tage", b);
+            }
+        } else if ("wetter".equals(ansicht) || "schoner".equals(ansicht)) {
+            if ("zeitraffer".equals(a)) p.put("modus", "zeitraffer");
+            else if (a.matches("([01]?\\d|2[0-3]):[0-5]\\d")) p.put("uhr", a);
+            else if ("heute".equals(a) || "woche".equals(a)) p.put("ansicht", a);
+            else if (a.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})*")) {
+                p.put("ansicht", "woche");
+                p.put("tage", a);
+            }
+            if (!b.isEmpty() && b.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})*")) p.put("tage", b);
+        } else if ("morgen".equals(ansicht) && ("demo".equals(a) || "story".equals(a) || "mehr".equals(a))) {
+            p.put("modus", a);
+        }
         return p;
     }
 

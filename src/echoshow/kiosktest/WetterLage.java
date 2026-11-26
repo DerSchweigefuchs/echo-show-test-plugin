@@ -23,7 +23,7 @@ final class WetterLage {
         long aufgang, untergang;          // next_rising / next_setting, ms (0 = unknown)
         Double lat, lon;                  // zone.home, only kept in memory
         long empfangen;                   // System.currentTimeMillis() of this snapshot
-        String stunden = "", woche = "", regen = "";   // input_text.wetter_stunden / woche / regen (for screensaver hint)
+        String stunden = "", woche = "", regen = "", tage = "";   // input_text.wetter_stunden / woche / regen / tage
     }
 
     /** The template: weather entity (setting, or the first weather.*), sun.sun, zone.home and forecast helpers. */
@@ -40,7 +40,7 @@ final class WetterLage {
             + " 'sun': ({'el': s.attributes.elevation" + d + ", 'az': s.attributes.azimuth" + d + ", 'rising': s.attributes.rising" + d
             + ", 'nr': s.attributes.next_rising" + d + ", 'ns': s.attributes.next_setting" + d + "} if s else none),"
             + " 'home': ({'lat': z.attributes.latitude" + d + ", 'lon': z.attributes.longitude" + d + "} if z else none),"
-            + " 'st': states('input_text.wetter_stunden'), 'wo': states('input_text.wetter_woche'), 'rg': states('input_text.wetter_regen')} | tojson }}";
+            + " 'st': states('input_text.wetter_stunden'), 'wo': states('input_text.wetter_woche'), 'rg': states('input_text.wetter_regen'), 'tg': states('input_text.wetter_tage')} | tojson }}";
         Map<String, Object> msg = new LinkedHashMap<>();
         msg.put("type", "render_template");
         msg.put("template", tpl);
@@ -80,6 +80,7 @@ final class WetterLage {
         d.stunden = sauberText(m.get("st"));
         d.woche = sauberText(m.get("wo"));
         d.regen = sauberText(m.get("rg"));
+        d.tage = sauberText(m.get("tg"));
         return d;
     }
 
@@ -469,9 +470,18 @@ final class WetterLage {
         return String.format(Locale.ROOT, "%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE));
     }
 
-    /** The detail lines under the condition, like the weather page (without the forecast's high / low). */
+    /** The detail lines under the condition, like the weather page (today's high / low, humidity, wind, sun). */
     static List<String> zeilen(Daten d) {
         List<String> l = new java.util.ArrayList<>();
+        if (d.woche != null && !d.woche.isEmpty()) {
+            String[] teile = d.woche.split(";");
+            if (teile.length > 0) {
+                String[] f = teile[0].split("\\|", -1);
+                if (f.length >= 4 && !f[2].trim().isEmpty() && !f[3].trim().isEmpty()) {
+                    l.add("↑ " + f[2].trim() + "° / ↓ " + f[3].trim() + "°");
+                }
+            }
+        }
         StringBuilder a = new StringBuilder();
         if (d.feuchte != null) a.append("Luftfeuchte ").append(Math.round(d.feuchte)).append(" %");
         if (d.wind != null) {

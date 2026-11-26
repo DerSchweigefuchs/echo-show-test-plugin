@@ -80,7 +80,7 @@ final class SvgMini {
         double cx = 0, cy = 0, sx = 0, sy = 0;
         char cmd = 'M';
         int i = 0, n = d.length();
-        double[] z = new double[6];
+        double[] z = new double[7];
         while (i < n) {
             char ch = d.charAt(i);
             if (Character.isLetter(ch)) {
@@ -97,7 +97,7 @@ final class SvgMini {
                 i++;
                 continue;
             }
-            int anz = "MmLlTt".indexOf(cmd) >= 0 ? 2 : ("HhVv".indexOf(cmd) >= 0 ? 1 : ("QqSs".indexOf(cmd) >= 0 ? 4 : ("Cc".indexOf(cmd) >= 0 ? 6 : 2)));
+            int anz = "MmLlTt".indexOf(cmd) >= 0 ? 2 : ("HhVv".indexOf(cmd) >= 0 ? 1 : ("QqSs".indexOf(cmd) >= 0 ? 4 : ("Cc".indexOf(cmd) >= 0 ? 6 : ("Aa".indexOf(cmd) >= 0 ? 7 : 2))));
             for (int k = 0; k < anz; k++) {
                 while (i < n && (d.charAt(i) == ' ' || d.charAt(i) == ',')) i++;
                 int st = i;
@@ -142,6 +142,13 @@ final class SvgMini {
                     cy = y;
                     break;
                 }
+                case 'A': {
+                    double x = rel ? cx + z[5] : z[5], y = rel ? cy + z[6] : z[6];
+                    bogen(p, cx, cy, z[0], z[1], z[3] != 0, z[4] != 0, x, y);
+                    cx = x;
+                    cy = y;
+                    break;
+                }
                 case 'C': {
                     double x1 = rel ? cx + z[0] : z[0], y1 = rel ? cy + z[1] : z[1], x2 = rel ? cx + z[2] : z[2], y2 = rel ? cy + z[3] : z[3], x = rel ? cx + z[4] : z[4], y = rel ? cy + z[5] : z[5];
                     p.cubicTo((float) x1, (float) y1, (float) x2, (float) y2, (float) x, (float) y);
@@ -154,6 +161,31 @@ final class SvgMini {
             }
         }
         return p;
+    }
+
+    /** SVG elliptical arc (no x-axis rotation) from (x1, y1) to (x2, y2), via the centre form. */
+    static void bogen(Path p, double x1, double y1, double rx, double ry, boolean gross, boolean sweep, double x2, double y2) {
+        rx = Math.abs(rx);
+        ry = Math.abs(ry);
+        if (rx == 0 || ry == 0) {
+            p.lineTo((float) x2, (float) y2);
+            return;
+        }
+        double dx2 = (x1 - x2) / 2, dy2 = (y1 - y2) / 2;
+        double lam = dx2 * dx2 / (rx * rx) + dy2 * dy2 / (ry * ry);
+        if (lam > 1) {
+            rx *= Math.sqrt(lam);
+            ry *= Math.sqrt(lam);
+        }
+        double num = rx * rx * ry * ry - rx * rx * dy2 * dy2 - ry * ry * dx2 * dx2, den = rx * rx * dy2 * dy2 + ry * ry * dx2 * dx2;
+        double k = (gross == sweep ? -1 : 1) * Math.sqrt(Math.max(0, num / den));
+        double cxp = k * rx * dy2 / ry, cyp = -k * ry * dx2 / rx;
+        double mx = cxp + (x1 + x2) / 2, my = cyp + (y1 + y2) / 2;
+        double a1 = Math.atan2((dy2 - cyp) / ry, (dx2 - cxp) / rx), a2 = Math.atan2((-dy2 - cyp) / ry, (-dx2 - cxp) / rx);
+        double d = a2 - a1;
+        if (sweep && d < 0) d += 2 * Math.PI;
+        if (!sweep && d > 0) d -= 2 * Math.PI;
+        p.arcTo(new RectF((float) (mx - rx), (float) (my - ry), (float) (mx + rx), (float) (my + ry)), (float) Math.toDegrees(a1), (float) Math.toDegrees(d), false);
     }
 
     static int farbe(String s) {
@@ -297,6 +329,9 @@ final class SvgMini {
                 float x = z(k, "x"), y = z(k, "y"), w = z(k, "width"), h = z(k, "height"), rx = z(k, "rx");
                 if (rx > 0) pp.addRoundRect(new RectF(x, y, x + w, y + h), rx, rx, Path.Direction.CW);
                 else pp.addRect(x, y, x + w, y + h, Path.Direction.CW);
+            } else if ("line".equals(tag)) {
+                pp.moveTo(z(k, "x1"), z(k, "y1"));
+                pp.lineTo(z(k, "x2"), z(k, "y2"));
             } else return null;
             return pp;
         }
@@ -309,7 +344,7 @@ final class SvgMini {
         private void blatt(Knoten k, int sch, float op) {
             Path form = form(k);
             if (form == null) return;
-            String fill = k.a.containsKey("fill") ? k.a.get("fill") : ("path".equals(k.tag) && k.a.containsKey("stroke") ? "none" : "#000000");
+            String fill = k.a.containsKey("fill") ? k.a.get("fill") : (("path".equals(k.tag) || "line".equals(k.tag)) && k.a.containsKey("stroke") ? "none" : "#000000");
             String stroke = k.a.get("stroke");
             float sw = k.a.containsKey("stroke-width") ? Float.parseFloat(k.a.get("stroke-width")) : 1;
             if (c == null) {   // measure
@@ -336,7 +371,10 @@ final class SvgMini {
                 if (fill.startsWith("url(")) {
                     RectF b = new RectF();
                     form.computeBounds(b, true);
-                    if (fill.contains("wf-hr")) p.setShader(new LinearGradient(0, b.top, 0, b.bottom, new int[] {0x2EFFFFFF, 0x00FFFFFF, 0x38000000}, new float[] {0, .5f, 1}, Shader.TileMode.CLAMP));
+                    if (fill.contains("wi-cl")) p.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0xFFFFFFFF, 0xFFB9C6D6, Shader.TileMode.CLAMP));
+                    else if (fill.contains("wi-cd")) p.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0xFFD9E1EA, 0xFF8E9CAD, Shader.TileMode.CLAMP));
+                    else if (fill.contains("wi-wb")) p.setShader(new LinearGradient(0, b.top, 0, b.bottom, new int[] {0xF25AA8FF, 0x733D7FD6, 0x0A2A5FA8}, new float[] {0, .55f, 1}, Shader.TileMode.CLAMP));
+                    else if (fill.contains("wf-hr")) p.setShader(new LinearGradient(0, b.top, 0, b.bottom, new int[] {0x2EFFFFFF, 0x00FFFFFF, 0x38000000}, new float[] {0, .5f, 1}, Shader.TileMode.CLAMP));
                     else p.setShader(new LinearGradient(b.left, 0, b.right, 0, new int[] {0x1FFFFFFF, 0x00FFFFFF, 0x00000000, 0x4D000000}, new float[] {0, .38f, .62f, 1}, Shader.TileMode.CLAMP));
                     p.setAlpha(Math.round(255 * op));
                 } else {

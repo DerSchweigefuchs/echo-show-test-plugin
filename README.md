@@ -7,11 +7,11 @@ Fünf native Vollbild-Ansichten über dem Dashboard plus ein nativer Kiosk-Satel
 
 | Ansicht | Inhalt |
 |---|---|
-| `kalender` | Tagesliste aus `calendar.get_events` (nur lesend) |
+| `kalender` | Tages-, Wochenend- oder Wochenliste aus `calendar.get_events` (nur lesend), mit hervorgehobenen Tagen (`tag`, `zeitraum`, `tage`) |
 | `timer` | Countdown-Ring, sekündlich oder flüssig |
 | `liste` | 50 Zeilen mit Auto-Scroll als Lasttest |
 | `anwesenheit` | Nachbau einer Lovelace-Anwesenheitsseite als schwerer Vergleichstest: Personenkarten, Zeitleiste 0–24 Uhr und Woche, auf einem Canvas gezeichnet |
-| `wetter` | Live-Wetterszene am Meer: Himmel nach der echten Sonnenhöhe, Sonne, Mond, Sterne, ziehende Wolken, Regen und Schnee, auf einem Canvas gezeichnet |
+| `wetter` | Live-Wetterszene (6 Landschaften) plus Vorhersage-Sheet unten (**Heute** 8-Stunden-Verlauf / **Woche** 6 Tage mit markierten Tagen via `ansicht` & `tage`), rein aus Home Assistant (`wetter_stunden`/`wetter_woche`/`wetter_regen`/`wetter_tage`) |
 | `schoner` | Vollbild-Vorschau des nativen Bildschirmschoners „Wetterszene“ (oder direkt in Kiosk Satellite unter **Screensaver → Screensaver mode → Wetterszene (Echo Show Test-Ansichten)** auswählbar) |
 | `morgen` | Nativer Ablauf **„Mein Tag“** und Nachrichten-Vorlese-Ansicht: 6-Landschaften-Wetterszene, Begrüßung, Tages-Chips (Regenschirm, Glätte, Termine, Müll, Einkaufsliste), Heute-Stundenverlauf (Temperaturkurve + Regen-Wellenbalken) sowie Live-Karaoke-Leiste und Vollbild-Story-Ansicht mit Steuerung (`echo_show/news/subscribe` & `echo_show/news/steuern`) |
 

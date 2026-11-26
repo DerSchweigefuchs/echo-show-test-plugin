@@ -232,6 +232,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private String tOrt = "", tTemp = "", tZustand = "";
     private List<String> tZeilen = new ArrayList<>();
 
+    // cached forecast sheet (Vorhersage.java: Heute / Woche + marked days)
+    private String vorhersageModus = "h";
+    private List<String> vorhersageTage = new ArrayList<>();
+    private Bitmap vorhersageBitmap;
+    private String vorhersageKey = "";
+    private Vorhersage.Inhalt vorhersageInhalt;
+    private List<String> vorhersageMarkiert = new ArrayList<>(), vorhersageNichtSichtbar = new ArrayList<>();
+
     // particles (seeded; positions follow from the time)
     private float[][] tropfen, flocken, hagel, spritzer, ringe, blaetter, glanz, sterne;
     private final List<float[][]> blitze = new ArrayList<>();
@@ -623,6 +631,16 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         invalidate();
     }
 
+    /** Forecast sheet parameters (ansicht: "heute" | "woche", tage: ["yyyy-MM-dd", ...]). */
+    void setVorhersageParam(String ansicht, List<String> tage) {
+        vorhersageTage = tage == null ? new ArrayList<>() : new ArrayList<>(tage);
+        if ("woche".equalsIgnoreCase(ansicht) || "w".equalsIgnoreCase(ansicht)) vorhersageModus = "w";
+        else if ("heute".equalsIgnoreCase(ansicht) || "h".equalsIgnoreCase(ansicht)) vorhersageModus = "h";
+        else if (!vorhersageTage.isEmpty()) vorhersageModus = "w";
+        vorhersageKey = "";
+        invalidate();
+    }
+
     /** Settings-driven preview override (like KS Weather Mood preview): active, landscape, weather condition, time-of-day preset. */
     void setEinstellungsVorschau(boolean aktiv, String neuOrt, String neuCond, String zeitStufe) {
         if (!aktiv) {
@@ -746,6 +764,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     @Override protected void onDetachedFromWindow() {
         angehaengt = false;
         schleife();
+        if (vorhersageBitmap != null) {
+            if (!vorhersageBitmap.isRecycled()) vorhersageBitmap.recycle();
+            vorhersageBitmap = null;
+            vorhersageKey = "";
+        }
         if (E.aktiv == 0) {
             haupt().removeCallbacks(FREIGABE);
             haupt().postDelayed(FREIGABE, FREIGABE_MS);
@@ -844,6 +867,25 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 if (Math.hypot(x - 58, y - 50) <= 32) {
                     performClick();
                     aktionen.zurueck();
+                    return true;
+                }
+                if (!schoner && !nurSzene && vorhersageInhalt != null && !vorhersageInhalt.leer()) {
+                    float sx = x - Vorhersage.X0, sy = y - Vorhersage.Y0;
+                    RectF[] sw = Vorhersage.schalter(text);
+                    if (sw[0].contains(sx, sy) && !"h".equals(vorhersageModus)) {
+                        performClick();
+                        vorhersageModus = "h";
+                        vorhersageKey = "";
+                        invalidate();
+                        return true;
+                    }
+                    if (sw[1].contains(sx, sy) && !"w".equals(vorhersageModus)) {
+                        performClick();
+                        vorhersageModus = "w";
+                        vorhersageKey = "";
+                        invalidate();
+                        return true;
+                    }
                 }
             }
         } catch (RuntimeException ignored) {
@@ -989,6 +1031,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         m.put("figur_kb", figurBytes() / 1024);
         m.put("cpu_kerne", Runtime.getRuntime().availableProcessors());
         m.put("bitmap_kb", bitmapBytes() / 1024);
+        if (!schoner && !nurSzene && vorhersageInhalt != null && !vorhersageInhalt.leer()) {
+            m.put("vorhersage_modus", "w".equals(vorhersageModus) ? "woche" : "heute");
+            if (!vorhersageMarkiert.isEmpty()) m.put("markiert", new ArrayList<>(vorhersageMarkiert));
+            if (!vorhersageNichtSichtbar.isEmpty()) m.put("nicht_sichtbar", new ArrayList<>(vorhersageNichtSichtbar));
+        }
         return m;
     }
 
@@ -1085,6 +1132,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             if (vorne == null) schonerUi.zeichnen(c, W, viewH, simZeit, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
         } else if (!nurSzene) {
             kopf(c);
+            vorhersageZeichnen(c);
             anzeigen(c);
         }
         c.restore();
@@ -2130,6 +2178,70 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         for (int i = 0; i < tZeilen.size(); i++) c.drawText(tZeilen.get(i), 104, 224 + i * 24.8f + (24.8f - 18.75f) / 2 + .928f * 16, tZeilenP);
     }
 
+    /** Draws the cached forecast sheet (Heute / Woche + marked days) at (20, 308); rebuilt only when inputs change. */
+    private void vorhersageZeichnen(Canvas c) {
+        WetterLage.Daten d = daten;
+        if (d == null) return;
+        boolean hatWoche = d.woche != null && !d.woche.isEmpty();
+        boolean hatStunden = d.stunden != null && !d.stunden.isEmpty();
+        if (!hatWoche && !hatStunden) {
+            vorhersageInhalt = null;
+            return;
+        }
+        String effModus = vorhersageModus;
+        if ("w".equals(effModus) && !hatWoche) effModus = "h";
+        else if ("h".equals(effModus) && !hatStunden) effModus = "w";
+
+        long jetzt = "live".equals(modus) ? System.currentTimeMillis() : simZeit;
+        int stundeBucket = (int) (jetzt / 600_000L);
+        String key = effModus + "|" + d.woche + "|" + d.stunden + "|" + d.regen + "|" + lage.cond + "|"
+            + vorhersageTage + "|" + stundeBucket + "|" + Math.round(skala * 100);
+        if (!key.equals(vorhersageKey) || vorhersageBitmap == null || vorhersageBitmap.isRecycled()) {
+            vorhersageKey = key;
+            Vorhersage.Inhalt in = new Vorhersage.Inhalt();
+            in.woche = Vorhersage.parse(d.woche);
+            in.stunden = Vorhersage.parse(d.stunden);
+            in.regen = Vorhersage.regen(d.regen);
+            in.jetzt = jetzt;
+            in.jetztNass = lage.tropfen > 0 || lage.flocken > 0 || lage.hagel > 0;
+            in.cond = lage.cond;
+            in.modus = effModus;
+            if (d.aufgang > 0) {
+                Calendar ca = Calendar.getInstance();
+                ca.setTimeInMillis(d.aufgang);
+                in.riseH = ca.get(Calendar.HOUR_OF_DAY);
+            }
+            if (d.untergang > 0) {
+                Calendar cu = Calendar.getInstance();
+                cu.setTimeInMillis(d.untergang);
+                in.setH = cu.get(Calendar.HOUR_OF_DAY);
+            }
+            if (!vorhersageTage.isEmpty() && !in.woche.isEmpty()) {
+                List<List<String>> res = Vorhersage.markieren(in.woche, vorhersageTage, jetzt, in.markiert);
+                vorhersageMarkiert = res.get(0);
+                vorhersageNichtSichtbar = res.get(1);
+            } else {
+                vorhersageMarkiert = new ArrayList<>();
+                vorhersageNichtSichtbar = new ArrayList<>();
+            }
+            vorhersageInhalt = in;
+            int bw = Math.max(1, Math.round(Vorhersage.BREITE * skala));
+            int bh = Math.max(1, Math.round(Vorhersage.HOEHE * skala));
+            if (vorhersageBitmap != null && !vorhersageBitmap.isRecycled()) vorhersageBitmap.recycle();
+            vorhersageBitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+            Canvas bc = new Canvas(vorhersageBitmap);
+            bc.scale(skala, skala);
+            Vorhersage.zeichnen(bc, in);
+        }
+        if (vorhersageBitmap != null && !vorhersageBitmap.isRecycled()) {
+            c.save();
+            c.translate(Vorhersage.X0, Vorhersage.Y0);
+            c.scale(1 / skala, 1 / skala);
+            c.drawBitmap(vorhersageBitmap, 0, 0, bild);
+            c.restore();
+        }
+    }
+
     /** Mode badge (time lapse / fixed time) and the measured values in the free area below the scene. */
     private void anzeigen(Canvas c) {
         if (!"live".equals(modus)) {
@@ -2144,6 +2256,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             text.setColor(0xFFECEBE8);
             c.drawText(s, W - 44, 52.5f, text);
         }
+        if (vorhersageInhalt != null && !vorhersageInhalt.leer()) return;
         text.setTypeface(schrift);
         text.setTextSize(12);
         text.setTextAlign(Paint.Align.CENTER);

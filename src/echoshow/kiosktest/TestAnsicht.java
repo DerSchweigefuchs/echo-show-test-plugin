@@ -27,6 +27,8 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
 import me.jxl.kiosk.plugins.KsTheme;
@@ -321,6 +323,19 @@ final class TestAnsicht implements OverlayFactory {
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
             plugin.vorschauAnwenden(wetterView);
+            if (m.param != null) {
+                Object ans = m.param.get("ansicht");
+                Object rawTage = m.param.get("tage");
+                List<String> tage = new ArrayList<>();
+                if (rawTage instanceof List) {
+                    for (Object o : (List<?>) rawTage) if (o instanceof String) tage.add((String) o);
+                } else if (rawTage instanceof String) {
+                    for (String s : ((String) rawTage).split(",")) if (!s.trim().isEmpty()) tage.add(s.trim());
+                }
+                if (ans instanceof String || !tage.isEmpty()) {
+                    wetterView.setVorhersageParam(ans instanceof String ? (String) ans : null, tage);
+                }
+            }
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             wetterFuellen();
         }
@@ -612,8 +627,17 @@ final class TestAnsicht implements OverlayFactory {
 
         private TextView kopfzeile() {
             TextView t = new TextView(ctx);
-            Object tag = m.param == null ? null : m.param.get("tag");
-            t.setText(new SimpleDateFormat("EEEE, d. MMMM yyyy", Locale.GERMAN).format(Kalender.tag(tag instanceof String ? (String) tag : null).getTime()));
+            Kalender.Spanne sp = m.kalenderSpanne != null ? m.kalenderSpanne : Kalender.spanne(m.param);
+            SimpleDateFormat fmt = new SimpleDateFormat("EEEE, d. MMMM yyyy", Locale.GERMAN);
+            if (sp.tageAnzahl <= 1) {
+                t.setText(fmt.format(sp.start.getTime()));
+            } else {
+                Calendar ende = (Calendar) sp.start.clone();
+                ende.add(Calendar.DAY_OF_MONTH, sp.tageAnzahl - 1);
+                SimpleDateFormat kurz = new SimpleDateFormat("EEE d. MMM", Locale.GERMAN);
+                String praefix = "wochenende".equals(sp.zeitraum) ? "Wochenende · " : ("woche".equals(sp.zeitraum) ? "Woche · " : "");
+                t.setText(praefix + kurz.format(sp.start.getTime()) + " – " + kurz.format(ende.getTime()));
+            }
             th.styleText(t, 20, 500, "onSurfaceVariant");
             t.setPadding(0, 0, 0, th.px(12));
             return t;
@@ -633,12 +657,55 @@ final class TestAnsicht implements OverlayFactory {
             kalenderListe.removeAllViews();
             kalenderListe.addView(kopfzeile());
             List<Kalender.Termin> termine = m.termine;
+            Kalender.Spanne sp = m.kalenderSpanne != null ? m.kalenderSpanne : Kalender.spanne(m.param);
             if (m.datenFehler != null) {
                 kalenderListe.addView(hinweis("Fehler: " + m.datenFehler));
-            } else if (termine == null || termine.isEmpty()) {
-                kalenderListe.addView(hinweis("Keine Termine an diesem Tag."));
+            } else if (sp.tageAnzahl <= 1) {
+                if (termine == null || termine.isEmpty()) {
+                    kalenderListe.addView(hinweis("Keine Termine an diesem Tag."));
+                } else {
+                    for (Kalender.Termin t : termine) kalenderListe.addView(termin(t));
+                }
             } else {
-                for (Kalender.Termin t : termine) kalenderListe.addView(termin(t));
+                SimpleDateFormat tagFmt = new SimpleDateFormat("EEEE, d. MMMM", Locale.GERMAN);
+                Calendar cur = (Calendar) sp.start.clone();
+                for (int d = 0; d < sp.tageAnzahl; d++) {
+                    String dk = Kalender.datumKey(cur);
+                    boolean mark = sp.markiert.contains(dk);
+                    List<Kalender.Termin> tagTermine = new ArrayList<>();
+                    if (termine != null) {
+                        for (Kalender.Termin t : termine) if (dk.equals(t.datum)) tagTermine.add(t);
+                    }
+                    LinearLayout box = new LinearLayout(ctx);
+                    box.setOrientation(LinearLayout.VERTICAL);
+                    box.setPadding(th.px(14), th.px(10), th.px(14), th.px(6));
+                    if (mark) {
+                        GradientDrawable bg = new GradientDrawable();
+                        bg.setColor(0x1A8FC0FF);
+                        bg.setCornerRadius(th.px(16));
+                        bg.setStroke(Math.max(1, Math.round(th.px(1) * 1.5f)), 0x8C8FC0FF);
+                        box.setBackground(bg);
+                    }
+                    TextView dh = new TextView(ctx);
+                    dh.setText(tagFmt.format(cur.getTime()));
+                    th.styleText(dh, 16, mark ? 700 : 500, mark ? "onSurface" : "onSurfaceVariant");
+                    if (mark) dh.setTextColor(0xFFFFFFFF);
+                    dh.setPadding(th.px(2), 0, 0, th.px(8));
+                    box.addView(dh);
+                    if (tagTermine.isEmpty()) {
+                        TextView leer = new TextView(ctx);
+                        leer.setText("Keine Termine");
+                        th.styleText(leer, 15, 400, "onSurfaceVariant");
+                        leer.setPadding(th.px(2), 0, 0, th.px(6));
+                        box.addView(leer);
+                    } else {
+                        for (Kalender.Termin t : tagTermine) box.addView(termin(t));
+                    }
+                    LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    blp.bottomMargin = th.px(10);
+                    kalenderListe.addView(box, blp);
+                    cur.add(Calendar.DAY_OF_MONTH, 1);
+                }
             }
             if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
         }
