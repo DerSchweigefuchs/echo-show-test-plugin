@@ -140,7 +140,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         vorschauWetter = wetterKey(text(s.get("vorschauWetter"), "Bewölkt"));
         vorschauZeit = zeitKey(text(s.get("vorschauZeit"), "Tag"));
         sternbildNamen = !Boolean.FALSE.equals(s.get("sternbildNamen"));
-        wetterFps = "24".equals(s.get("wetterFps")) ? 24 : 30;
+        wetterFps = parseInt(s.get("wetterFps"), 30, 15, 60);
         wetterAbgleichen();
         SchonerDaten.Optionen opt = new SchonerDaten.Optionen();
         opt.uhr = !Boolean.FALSE.equals(s.get("schonerUhr"));
@@ -150,7 +150,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         opt.wetter = !Boolean.FALSE.equals(s.get("schonerWetter"));
         opt.hinweise = !Boolean.FALSE.equals(s.get("schonerHinweise"));
         opt.musik = !Boolean.FALSE.equals(s.get("schonerMusik"));
-        opt.ruhigFps = parseInt(s.get("schonerRuhigFps"), 12, 6, 30);
+        opt.ruhigFps = parseInt(s.get("schonerRuhigFps"), 15, 12, 60);
+        opt.wetterFps = parseInt(s.get("schonerWetterFps"), 60, 20, 60);
         schonerOpt = opt;
         schonerMusikAusschluss = text(s.get("schonerMusikAusschluss"), "");
         schonerAbgleichen();

@@ -77,7 +77,7 @@ final class Landschaften {
         TAL_KANTE_GRAS = new Path(), TAL_FELS = new Path(), TAL_FELS_D = new Path(), TAL_FELS_LICHT = new Path(),
         TAL_GRAS_H = new Path(), TAL_GRAS_M = new Path(), TAL_GRAS_V = new Path(),
         TAL_ZELT = new Path(), TAL_ZELT_S = new Path(), TAL_KIRCHE_DACH = new Path();
-    private static final float[][][] TAL_FELD_QUADS; // [n][4][2]
+    private static final Path[] TAL_FELD_PATHS;      // pre-built valley field quads (zero per-frame path rebuilds)
     private static final float[][] TAL_FELD_META;    // {v, colIdx, isColor, shadeF}
     private static final float[][] TAL_HECKEN;       // {x0, x1, y, width}
     private static final float[][] TAL_BAEUME;       // {x, y, r, v, colIdx}
@@ -389,7 +389,7 @@ final class Landschaften {
         float[] ys = {Y0, 261, 265, 270, 277, 286, 298, 314, 335, UNTEN};
         java.util.List<Float> xsList = new java.util.ArrayList<>();
         for (float xb = -260; xb < 1240; xb += (float) (70 + Rt.next() * 60)) xsList.add(xb);
-        java.util.List<float[][]> qList = new java.util.ArrayList<>();
+        java.util.List<Path> qList = new java.util.ArrayList<>();
         java.util.List<float[]> mList = new java.util.ArrayList<>();
         java.util.List<float[]> hList = new java.util.ArrayList<>();
         java.util.List<float[]> bList = new java.util.ArrayList<>();
@@ -402,7 +402,9 @@ final class Landschaften {
                 float a0 = VX + (xA - VX) * (y0 - VY) / (UNTEN - VY), b0 = VX + (xB - VX) * (y0 - VY) / (UNTEN - VY);
                 float a1 = VX + (xA - VX) * (y1 - VY) / (UNTEN - VY), b1 = VX + (xB - VX) * (y1 - VY) / (UNTEN - VY);
                 if (b1 > 230 && a1 < 720) {
-                    qList.add(new float[][] {{a0, y0}, {b0, y0}, {b1, y1}, {a1, y1}});
+                    Path qp = new Path();
+                    qp.moveTo(a0, y0); qp.lineTo(b0, y0); qp.lineTo(b1, y1); qp.lineTo(a1, y1); qp.close();
+                    qList.add(qp);
                     boolean isCol = Rt.next() < .6;
                     mList.add(new float[] {v, (int) Math.floor(Rt.next() * 4), isCol ? 1 : 0, (float) (.93 + Rt.next() * .12)});
                     if (row > 1 && Rt.next() < .28) {
@@ -422,7 +424,7 @@ final class Landschaften {
                 col = c1;
             }
         }
-        TAL_FELD_QUADS = qList.toArray(new float[0][][]);
+        TAL_FELD_PATHS = qList.toArray(new Path[0]);
         TAL_FELD_META = mList.toArray(new float[0][]);
         TAL_HECKEN = hList.toArray(new float[0][]);
         appendBand(TAL_STRASSE, new float[][] {{484, Y0 + 1, .5f}, {492, 266, .9f}, {504, 276, 1.4f}, {512, 288, 2.2f}, {530, 302, 3.4f}, {556, 322, 5}, {590, 350, 6.5f}, {606, 366, 7.5f}});
@@ -1049,7 +1051,7 @@ final class Landschaften {
         // Perspective valley floor
         fillShader(hillShader); c.drawPath(TAL_BODEN, p); p.setShader(null);
         float mixK = tag < .5f ? .16f : ("tag".equals(lage.landTag) ? .58f : .36f);
-        for (int i = 0; i < TAL_FELD_QUADS.length; i++) {
+        for (int i = 0; i < TAL_FELD_PATHS.length; i++) {
             float[] m = TAL_FELD_META[i];
             float v = m[0];
             int base = WetterLage.mix(cHillA, cHillB, v * .8f);
@@ -1057,9 +1059,7 @@ final class Landschaften {
                 : (m[2] > .5f ? WetterLage.mix(base, cTalFeld[(int) m[1]], mixK) : WetterLage.shade(base, m[3]));
             col = WetterLage.mix(col, cTalFar, (1 - v) * .45f);
             p.setColor(col);
-            float[][] q = TAL_FELD_QUADS[i];
-            tmp.reset(); tmp.moveTo(q[0][0], q[0][1]); tmp.lineTo(q[1][0], q[1][1]); tmp.lineTo(q[2][0], q[2][1]); tmp.lineTo(q[3][0], q[3][1]); tmp.close();
-            c.drawPath(tmp, p);
+            c.drawPath(TAL_FELD_PATHS[i], p);
         }
         int hc = WetterLage.alpha(WetterLage.mix(cPine, cHillB, .3f), .55f);
         linie.setColor(hc);

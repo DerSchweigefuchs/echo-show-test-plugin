@@ -26,12 +26,13 @@ final class SchonerDaten {
         boolean hinweise = true;
         boolean musik = true;
         int ruhigFps = 12;
+        int wetterFps = 60;
 
         Optionen kopie() {
             Optionen o = new Optionen();
             o.uhr = uhr; o.uhrGross = uhrGross; o.sekunden = sekunden;
             o.datum = datum; o.wetter = wetter; o.hinweise = hinweise;
-            o.musik = musik; o.ruhigFps = ruhigFps;
+            o.musik = musik; o.ruhigFps = ruhigFps; o.wetterFps = wetterFps;
             return o;
         }
     }

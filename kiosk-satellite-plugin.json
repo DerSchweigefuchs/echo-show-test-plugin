@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
@@ -121,11 +121,12 @@
       "title": "Bildrate der Wetter-Ansicht",
       "default": "30",
       "options": [
+        "60",
         "30",
-        "24"
+        "20"
       ],
       "group": "Wetter & Landschaft",
-      "description": "Ziel-Bildrate der Wetter-Testansicht. Pausiert automatisch bei Bildschirmschoner oder ausgeschaltetem Bildschirm."
+      "description": "Ziel-Bildrate der Wetter-Testansicht (exakte Teiler von 60 Hz gegen Mikroruckler)."
     },
     {
       "key": "schonerUhr",
@@ -199,15 +200,27 @@
       "key": "schonerRuhigFps",
       "type": "select",
       "title": "Bildrate bei ruhigem Wetter",
-      "default": "12",
+      "default": "15",
       "options": [
         "12",
         "15",
         "20",
-        "24"
+        "30"
       ],
       "group": "Bildschirmschoner",
-      "description": "Sparsame Bildrate im Schoner bei klarem oder bewölktem Wetter (bei Regen, Schnee, Wind oder Gewitter automatisch 24 fps)."
+      "description": "Sparsame Bildrate im Schoner bei klarem oder bewölktem Wetter (exakte 60-Hz-Teiler)."
+    },
+    {
+      "key": "schonerWetterFps",
+      "type": "select",
+      "title": "Bildrate bei Regen, Schnee & Wind",
+      "default": "60",
+      "options": [
+        "60",
+        "30"
+      ],
+      "group": "Bildschirmschoner",
+      "description": "Flüssige VSync-synchronisierte Bildrate bei Regen, Schnee, Hagel, Wind oder Gewitter."
     },
     {
       "key": "vorschauAktiv",

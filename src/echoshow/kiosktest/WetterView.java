@@ -179,7 +179,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private long rafferStart = System.currentTimeMillis();
     private final long erstellt = SystemClock.uptimeMillis();
     private final boolean namen;
-    private final long intervallNs;
+    private final int basisFps;
     private final boolean schoner, schonerVorschau;
     private final SchonerUi schonerUi;
     private final Landschaften landschaften = new Landschaften();
@@ -240,7 +240,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     // loop and measurement
     private boolean laeuft, angehaengt, fensterSichtbar = true, fertigGemeldet;
-    private long letzterFrame, aufbauMs = -1, letzteZeichnung, sekStart;
+    private long letzterFrame, frameNs, startNs, aufbauMs = -1, letzteZeichnung, sekStart;
+    private int vsyncZaehler;
     private int bilderSek, fps, rucklerGesamt, bilderGesamt;
     private long maxLuecke;
     private final long[] dauern = new long[150];   // draw time of the last frames, ns
@@ -530,7 +531,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         this.schonerVorschau = vorschau;
         this.schonerOpt = opt != null ? opt : new SchonerDaten.Optionen();
         this.schonerUi = schoner ? new SchonerUi(theme) : null;
-        this.intervallNs = 1_000_000_000L / Math.max(10, Math.min(60, zielFps));
+        this.basisFps = Math.max(12, Math.min(60, zielFps));
         long fest = 0;
         String mo = "live";
         if ("zeitraffer".equals(modus)) mo = "zeitraffer";
@@ -740,6 +741,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             haupt().removeCallbacks(FREIGABE);
             letzterFrame = 0;
             letzteZeichnung = 0;
+            vsyncZaehler = 0;
             ch.postFrameCallback(this);
         } else {
             ch.removeFrameCallback(this);
@@ -751,20 +753,33 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
     }
 
+    /** Exact 60 Hz VSync divisor (1=60fps, 2=30fps, 3=20fps, 4=15fps, 5=12fps) so there is zero 3:2 pulldown judder. */
+    private int vsyncTeiler() {
+        int ziel;
+        if (!schoner) {
+            ziel = basisFps;
+        } else {
+            boolean bewegt = lage.tropfen > 0 || lage.flocken > 0 || lage.hagel > 0 || lage.wind || lage.blitz;
+            SchonerDaten.Optionen o = schonerOpt;
+            ziel = bewegt ? (o != null ? o.wetterFps : 60) : (o != null ? o.ruhigFps : 12);
+        }
+        return Math.max(1, Math.min(6, Math.round(60f / Math.max(10, Math.min(60, ziel)))));
+    }
+
     private long zielIntervallNs() {
-        if (!schoner) return intervallNs;
-        boolean bewegt = lage.tropfen > 0 || lage.flocken > 0 || lage.hagel > 0 || lage.wind || lage.blitz;
-        SchonerDaten.Optionen o = schonerOpt;
-        int ziel = bewegt ? 24 : Math.max(6, Math.min(30, o != null ? o.ruhigFps : 12));
-        return 1_000_000_000L / ziel;
+        return 1_000_000_000L * vsyncTeiler() / 60L;
     }
 
     @Override public void doFrame(long ns) {
         if (!laeuft) return;
-        if (letzterFrame == 0 || ns - letzterFrame >= zielIntervallNs() - 2_000_000L) {
+        if (startNs == 0) startNs = ns;
+        int teiler = vsyncTeiler();
+        if (letzterFrame == 0 || (vsyncZaehler % teiler) == 0) {
             letzterFrame = ns;
+            frameNs = ns;
             invalidate();
         }
+        vsyncZaehler++;
         Choreographer.getInstance().postFrameCallback(this);
     }
 
@@ -964,7 +979,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             wolkenYh = Wolken.YH;
         }
         long anim = SystemClock.uptimeMillis();
-        float t = anim / 1000f;
+        float t = frameNs > 0 && startNs > 0 ? (float) ((frameNs - startNs) * 1e-9) : anim / 1000f;
         if (cpuWand == 0) {
             cpu();
             cpuStartWand = cpuWand;
@@ -1601,13 +1616,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private void reihenZeichnen(Canvas c, long anim, List<Wolken.Reihe> rh, Bitmap[] bm, BitmapShader[] sh, float[] y0, float[] y1, float alpha) {
         bild.setColor(0xFFFFFFFF);
         bild.setAlpha(Math.round(255 * alpha));
+        double driftS = frameNs > 0 && startNs > 0 ? (frameNs - startNs) * 1e-9 : anim * .001;
         for (int i = 0; i < rh.size() && i < bm.length; i++) {
             Bitmap b = bm[i];
             BitmapShader s = sh != null && i < sh.length ? sh[i] : null;
             if (b == null || b.isRecycled() || s == null) continue;
             Wolken.Reihe reihe = rh.get(i);
             float tempo = lage.schnell ? 1700f / reihe.dauer : 600f / reihe.dauer;   // px per s, far rows slower
-            float o = (float) ((anim * .001 * tempo) % Wolken.BREITE);
+            float o = (float) ((driftS * tempo) % Wolken.BREITE);
             wolkenMatrix.setScale(Wolken.BREITE / b.getWidth(), (y1[i] - y0[i]) / b.getHeight());
             wolkenMatrix.postTranslate(o, y0[i]);
             s.setLocalMatrix(wolkenMatrix);
@@ -1964,9 +1980,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             r.set(g[0] + 8 - 8 * s, gy + 2 - 2 * s, g[0] + 8 + 8 * s, gy + 2 + 2 * s);
             c.drawOval(r, linie);
         }
-        for (float[] f : flocken) {   // snow: 0 -> (30, half) -> (-10, full) (sk-snow)
+        for (float[] f : flocken) {   // snow: smooth sinusoidal sway instead of a sharp mid-air V-turn
             float ph = ((t + f[3]) % f[2]) / f[2];
-            float x = f[0] + (ph < .5f ? 60 * ph : 30 - 80 * (ph - .5f)), y = -20 + schneeH * ph;
+            float sway = (float) Math.sin(ph * 2 * Math.PI + f[3] * 1.7) * 26f;
+            float x = f[0] + sway, y = -20 + schneeH * ph;
             p.setColor(WetterLage.alpha(0xFFFFFFFF, f[4]));
             c.drawCircle(x + f[1] / 2, y + f[1] / 2, f[1] / 2, p);
         }
