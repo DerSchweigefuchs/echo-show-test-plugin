@@ -6,7 +6,6 @@ import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -26,16 +25,14 @@ import java.util.Map;
 import me.jxl.kiosk.plugins.KsTheme;
 
 /**
- * Native "Mein Tag" and news reading view on the 963 x 584 dashboard grid:
- * - Phase 1 (morning overview / briefing / minimized bar): live 6-landscape WetterView in the background,
- *   greeting + current weather + info chips (umbrella, ice, appointments, bins, shopping list),
- *   today's 8-hour forecast card (smooth temperature curve + wavy rain bars), and the floating karaoke pill bar.
- * - Phase 2 (news story / breaking news / "Mehr dazu"): full-screen story layout with hardware-blurred article
- *   backdrop, segmented progress bar, sharp article photo, source chip, live word-by-word karaoke highlighting,
- *   animated voice orb + waveform, playback controls, and "Als Nächstes" preview card.
- *
- * Performance: zero allocations in onDraw, no setShadowLayer (2-pass offset shadows), pre-laid-out karaoke words,
- * and WetterView is hidden & paused automatically whenever Phase 2 covers the screen.
+ * Unified native "Mein Tag" v2 & news story player on the 963 x 584 Echo Show grid:
+ * - Single cohesive story UI across ALL custom rundown segments (Begrüßung, Lokal, Politik, Wirtschaft,
+ *   Sport, Kalender, Müll, Einkaufsliste, Wetter, Abschied, Nachrichten, Eilmeldung).
+ * - Unified top segmented progress bar with per-group captions and smooth sub-progress fill.
+ * - Unified bottom transport bar (‹ Zurück, Pause/Weiter, Überspringen ›, + Mehr dazu, Stopp) + equalizer & mode.
+ * - Live 6-landscape WetterView stays active behind Wetter / Begrüßung / Abschied / Kalender / Müll / Liste,
+ *   and is paused & hidden (GONE) during blurred-photo news segments for zero GPU overhead.
+ * - Zero setShadowLayer, zero allocations in onDraw, native Android Roboto typefaces (Thin/Light/Regular/Medium).
  */
 final class MorgenView extends FrameLayout {
     static final float W = WetterView.W, H = WetterView.H;
@@ -52,17 +49,17 @@ final class MorgenView extends FrameLayout {
     private final Aktionen aktionen;
     private final WetterView wetterView;
     private final OverlayCanvas overlay;
-    private boolean storyVollbild;
+    private boolean wetterAus;
 
     MorgenView(Context ctx, KsTheme theme, Aktionen aktionen, String ort, boolean sternbildNamen) {
         super(ctx);
         this.aktionen = aktionen;
-        setBackgroundColor(0xFF0D1720);
+        setBackgroundColor(0xFF0B1119);
         setClickable(true);
 
         wetterView = new WetterView(ctx, new WetterView.Aktionen() {
             @Override public void zurueck() {}
-            @Override public boolean pausiert() { return storyVollbild || aktionen.pausiert(); }
+            @Override public boolean pausiert() { return wetterAus || aktionen.pausiert(); }
             @Override public void fertig(long aufbauMs) {}
         }, "live", null, sternbildNamen, 20);
         wetterView.setNurSzene(true);
@@ -100,21 +97,20 @@ final class MorgenView extends FrameLayout {
         overlay.schleife();
     }
 
-    /** Desktop render-test hook: draws the overlay directly at a given time. */
     void zeichneOverlayTest(Canvas c, int w, int h, long nowMs, float animS) {
         overlay.zeichneFuerTest(c, w, h, nowMs, animS);
     }
 
     private void abgleichSichtbarkeit() {
-        boolean neu = overlay.istStoryVollbild();
-        if (neu != storyVollbild) {
-            storyVollbild = neu;
-            wetterView.setVisibility(neu ? GONE : VISIBLE);
+        boolean neuAus = overlay.istNachrichtVollbild();
+        if (neuAus != wetterAus) {
+            wetterAus = neuAus;
+            wetterView.setVisibility(neuAus ? GONE : VISIBLE);
             wetterView.pauseGeaendert();
         }
     }
 
-    // ---- word layout for zero-allocation karaoke rendering ---------------------------------------------------------
+    // ---- Pre-laid-out karaoke words (zero allocations in onDraw) ---------------------------------------------------
 
     private static final class Wort {
         final String text;
@@ -122,13 +118,8 @@ final class MorgenView extends FrameLayout {
         final float x, y, breite;
 
         Wort(String text, int start, int ende, int zeile, float x, float y, float breite) {
-            this.text = text;
-            this.start = start;
-            this.ende = ende;
-            this.zeile = zeile;
-            this.x = x;
-            this.y = y;
-            this.breite = breite;
+            this.text = text; this.start = start; this.ende = ende;
+            this.zeile = zeile; this.x = x; this.y = y; this.breite = breite;
         }
     }
 
@@ -144,10 +135,7 @@ final class MorgenView extends FrameLayout {
             key = k;
             woerter.clear();
             zeilenHoehe = lineH;
-            if (text == null || text.isEmpty()) {
-                zeilen = 0;
-                return;
-            }
+            if (text == null || text.isEmpty()) { zeilen = 0; return; }
             float space = pt.measureText(" ");
             int len = text.length(), i = 0, zeile = 0;
             float cx = 0;
@@ -158,10 +146,7 @@ final class MorgenView extends FrameLayout {
                 while (i < len && !Character.isWhitespace(text.charAt(i))) i++;
                 String w = text.substring(s, i);
                 float ww = pt.measureText(w);
-                if (cx > 0 && cx + ww > maxW) {
-                    zeile++;
-                    cx = 0;
-                }
+                if (cx > 0 && cx + ww > maxW) { zeile++; cx = 0; }
                 woerter.add(new Wort(w, s, i, zeile, cx, zeile * lineH, ww));
                 cx += ww + space;
             }
@@ -172,19 +157,13 @@ final class MorgenView extends FrameLayout {
     private static final class Hit {
         final String id;
         final float l, t, r, b;
-
         Hit(String id, float l, float t, float r, float b) {
-            this.id = id;
-            this.l = l;
-            this.t = t;
-            this.r = r;
-            this.b = b;
+            this.id = id; this.l = l; this.t = t; this.r = r; this.b = b;
         }
-
         boolean trifft(float x, float y) { return x >= l && x <= r && y >= t && y <= b; }
     }
 
-    // ---- Canvas overlay view ---------------------------------------------------------------------------------------
+    // ---- Unified Story Overlay Canvas ------------------------------------------------------------------------------
 
     private final class OverlayCanvas extends View implements Choreographer.FrameCallback {
         private final KsTheme theme;
@@ -199,58 +178,37 @@ final class MorgenView extends FrameLayout {
         private boolean mini;
         private float pauseFortschritt;
         private boolean warPause;
-        private float barScrollY, mehrScrollY;
+        private float karScrollY;
         private String letzterSegKey = "";
 
-        // Article images (active + next), tiny 48x27 blurred backdrop + sharp photo
         private final Map<String, Bitmap> scharfBilder = new HashMap<>();
         private final Map<String, Bitmap> weichBilder = new HashMap<>();
 
-        // Cached shaders & paths
-        private final Shader linksScrim = new LinearGradient(0, 0, 640, 0,
-            new int[] {0xE60D141C, 0xBF0D141C, 0x000D141C}, new float[] {0f, .52f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader storyMorgenBg = new LinearGradient(0, 0, W * .7f, H,
-            new int[] {0xFF2B3D5E, 0xFF5A4A6E, 0xFFC2786A}, new float[] {0f, .46f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader storyEilBg = new LinearGradient(0, 0, W * .7f, H, 0xFF4A1418, 0xFF1A0D10, Shader.TileMode.CLAMP);
-        private final Shader storyNewsBg = new LinearGradient(0, 0, W * .7f, H, 0xFF1C2A3A, 0xFF0D141C, Shader.TileMode.CLAMP);
-        private final Shader storyScrimTitel = new LinearGradient(0, 0, W, 0,
-            new int[] {0x8C080B0F, 0xD4080B0F, 0xDC080B0F}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader progShader = new LinearGradient(0, 0, W, 0, 0xFF6F8CFF, 0xFF9AD0FF, Shader.TileMode.CLAMP);
-        private final Shader welleShader = new LinearGradient(0, -16, 0, 16, 0xFF9AD0FF, 0xFF6F8CFF, Shader.TileMode.CLAMP);
-        private final Shader regenBarShader = new LinearGradient(0, 0, 0, 40,
-            new int[] {0xF25AA8FF, 0x733D7FD6, 0x0A2A5FA8}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader orbWarm = new RadialGradient(-7, -9, 36,
-            new int[] {0xFFFFF1D6, 0xFFFFB36B, 0xFFD0603F}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader orbKalt = new RadialGradient(-7, -9, 36,
-            new int[] {0xFFBFE3FF, 0xFF5B7CFF, 0xFF3B2FB8}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader orbGlowWarm = new RadialGradient(0, 0, 44,
-            new int[] {0x78FFAA6E, 0x24FFAA6E, 0x00FFAA6E}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
-        private final Shader orbGlowKalt = new RadialGradient(0, 0, 44,
-            new int[] {0x786FA0FF, 0x246FA0FF, 0x006FA0FF}, new float[] {0f, .55f, 1f}, Shader.TileMode.CLAMP);
+        // Seamless pre-allocated gradients (all fade cleanly to 0 alpha where needed)
+        private final Shader scrimLinks = new LinearGradient(0, 0, 620, 0, 0xCC0A111A, 0x000A111A, Shader.TileMode.CLAMP);
+        private final Shader scrimOben = new LinearGradient(0, 0, 0, 100, 0xAA0A111A, 0x000A111A, Shader.TileMode.CLAMP);
+        private final Shader scrimUnten = new LinearGradient(0, 310, 0, H, 0x000A111A, 0xEC0A111A, Shader.TileMode.CLAMP);
+        private final Shader scrimDim = new LinearGradient(0, 0, 0, H, 0xD40B121C, 0xF20B121C, Shader.TileMode.CLAMP);
+        private final Shader scrimNews = new LinearGradient(0, 0, 0, H, 0xC40C131D, 0xF40A1018, Shader.TileMode.CLAMP);
+        private final Shader bgNews = new LinearGradient(0, 0, W * .7f, H, 0xFF1A283A, 0xFF0C131C, Shader.TileMode.CLAMP);
+        private final Shader bgEil = new LinearGradient(0, 0, W * .7f, H, 0xFF4A1418, 0xFF1A0D10, Shader.TileMode.CLAMP);
+        private final Shader regenShader = new LinearGradient(0, 0, 0, 36, 0xB85AAAF5, 0x245AAAF5, Shader.TileMode.CLAMP);
+        private final Shader kurveFallback = new LinearGradient(468, 0, 906, 0, 0xFF8FD3F4, 0xFFF2B45C, Shader.TileMode.CLAMP);
 
-        // Pre-allocated paints & geometry
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint linie = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint bildP = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        private final Paint datumP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint grussP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint tempP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint zustP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint chipP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint sumP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint kleinP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint mittelP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint boldP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint karaokeP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint karaokeAktivP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint karP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint karActP = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        private final Typeface tfThin, tfLight, tfNorm, tfMed;
         private final RectF rf = new RectF();
         private final Rect srcR = new Rect();
         private final Path clipPath = new Path();
         private final Path kurvePath = new Path();
-        private final Path wavePath = new Path();
         private final Path iconTmp = new Path();
-        private final WortLayout barLayout = new WortLayout();
-        private final WortLayout storyLayout = new WortLayout();
+        private final WortLayout karLayout = new WortLayout();
         private Shader kurveShader;
         private String kurveKey = "";
 
@@ -263,27 +221,14 @@ final class MorgenView extends FrameLayout {
             super(ctx);
             this.theme = theme;
             setClickable(true);
-
-            Typeface light = Typeface.create("sans-serif-light", Typeface.NORMAL);
-            Typeface norm = Typeface.create("sans-serif", Typeface.NORMAL);
-            Typeface med = Typeface.create("sans-serif-medium", Typeface.NORMAL);
-            Typeface bold = Typeface.create("sans-serif", Typeface.BOLD);
+            tfThin = Typeface.create("sans-serif-thin", Typeface.NORMAL);
+            tfLight = Typeface.create("sans-serif-light", Typeface.NORMAL);
+            tfNorm = Typeface.create("sans-serif", Typeface.NORMAL);
+            tfMed = Typeface.create("sans-serif-medium", Typeface.NORMAL);
 
             linie.setStyle(Paint.Style.STROKE);
             linie.setStrokeCap(Paint.Cap.ROUND);
             linie.setStrokeJoin(Paint.Join.ROUND);
-
-            datumP.setTypeface(norm); datumP.setTextSize(15); datumP.setColor(0xC8FFFFFF);
-            grussP.setTypeface(light); grussP.setTextSize(38); grussP.setColor(0xFFECEBE8);
-            tempP.setTypeface(light); tempP.setTextSize(54); tempP.setColor(0xFFECEBE8);
-            zustP.setTypeface(med); zustP.setTextSize(21); zustP.setColor(0xFFECEBE8);
-            chipP.setTypeface(norm); chipP.setTextSize(14); chipP.setColor(0xFFECEBE8);
-            sumP.setTypeface(med); sumP.setTextSize(16.5f); sumP.setColor(0xFFECEBE8);
-            kleinP.setTypeface(norm); kleinP.setTextSize(13); kleinP.setColor(0xFF9FB0C4);
-            mittelP.setTypeface(med); mittelP.setTextSize(15); mittelP.setColor(0xFFECEBE8);
-            boldP.setTypeface(bold); boldP.setTextSize(13); boldP.setColor(0xFF9AD0FF);
-            karaokeP.setTypeface(norm); karaokeP.setTextSize(15.5f);
-            karaokeAktivP.setTypeface(med); karaokeAktivP.setTextSize(15.5f);
         }
 
         void setWetter(WetterLage.Daten wd) {
@@ -303,19 +248,15 @@ final class MorgenView extends FrameLayout {
             } else if (!warAktiv) {
                 mini = "leiste".equals(status.ansicht);
             }
-            if (status.pause && !warPause) {
-                pauseFortschritt = status.fortschritt(System.currentTimeMillis());
-            }
+            if (status.pause && !warPause) pauseFortschritt = status.fortschritt(System.currentTimeMillis());
             warPause = status.pause;
 
             String segKey = status.seg == null ? "" : status.i + "|" + status.seg.id + "|" + status.seg.art + "|" + status.seg.t0;
             if (!segKey.equals(letzterSegKey)) {
                 letzterSegKey = segKey;
-                barScrollY = 0;
-                mehrScrollY = 0;
+                karScrollY = 0;
             }
 
-            // Prefetch current and next article thumbnails
             MorgenDaten.Meldung cur = status.aktuelleMeldung();
             MorgenDaten.Meldung nxt = status.naechsteMeldung();
             if (cur != null && !cur.bild.isEmpty() && !scharfBilder.containsKey(cur.bild)) aktionen.bildBedarf(cur.bild);
@@ -332,62 +273,30 @@ final class MorgenView extends FrameLayout {
             invalidate();
         }
 
-        boolean istStoryVollbild() {
-            if (status == null || !status.aktiv || status.seg == null || "aus".equals(status.ansicht)) return false;
-            if (mini) return false;
-            boolean morgenIntro = "morgen".equals(status.art) && status.seg.id.isEmpty();
-            return !morgenIntro;
+        boolean istNachrichtVollbild() {
+            if (status == null || !status.aktiv || status.seg == null || mini || "aus".equals(status.ansicht)) return false;
+            String a = status.seg.art;
+            return "meldung".equals(a) || "titel".equals(a) || "mehr".equals(a) || "text".equals(a);
         }
 
-        @Override protected void onAttachedToWindow() {
-            super.onAttachedToWindow();
-            angehaengt = true;
-            schleife();
-        }
-
-        @Override protected void onDetachedFromWindow() {
-            angehaengt = false;
-            schleife();
-            super.onDetachedFromWindow();
-        }
-
-        @Override protected void onWindowVisibilityChanged(int v) {
-            super.onWindowVisibilityChanged(v);
-            sichtbar = v == VISIBLE;
-            schleife();
-        }
-
-        @Override public void onVisibilityAggregated(boolean vis) {
-            super.onVisibilityAggregated(vis);
-            schleife();
-        }
+        @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); angehaengt = true; schleife(); }
+        @Override protected void onDetachedFromWindow() { angehaengt = false; schleife(); super.onDetachedFromWindow(); }
+        @Override protected void onWindowVisibilityChanged(int v) { super.onWindowVisibilityChanged(v); sichtbar = v == VISIBLE; schleife(); }
+        @Override public void onVisibilityAggregated(boolean vis) { super.onVisibilityAggregated(vis); schleife(); }
 
         void schleife() {
             boolean soll = angehaengt && sichtbar && isShown() && !aktionen.pausiert();
             if (soll == laeuft) return;
             laeuft = soll;
             Choreographer ch = Choreographer.getInstance();
-            if (soll) {
-                tick = 0;
-                ch.postFrameCallback(this);
-            } else {
-                ch.removeFrameCallback(this);
-            }
-        }
-
-        private int teiler() {
-            if (status != null && status.aktiv && status.seg != null && !status.pause) return 2;   // 30 fps for silky karaoke & waveform
-            return 30;                                                                              // 2 fps when idle/paused
+            if (soll) { tick = 0; ch.postFrameCallback(this); } else ch.removeFrameCallback(this);
         }
 
         @Override public void doFrame(long ns) {
             if (!laeuft) return;
             if (startNs == 0) startNs = ns;
-            int tl = teiler();
-            if (tick == 0 || (tick % tl) == 0) {
-                frameNs = ns;
-                invalidate();
-            }
+            int tl = (status != null && status.aktiv && status.seg != null && !status.pause) ? 2 : 30;
+            if (tick == 0 || (tick % tl) == 0) { frameNs = ns; invalidate(); }
             tick++;
             Choreographer.getInstance().postFrameCallback(this);
         }
@@ -416,752 +325,751 @@ final class MorgenView extends FrameLayout {
             c.scale(skala, skala);
             c.clipRect(0, 0, W, H);
             try {
-                if (istStoryVollbild()) {
-                    zeichneStory(c, nowMs, animS);
+                MorgenDaten.Segment seg = (status != null && status.aktiv) ? status.seg : null;
+                if (seg == null || mini) {
+                    zeichneStandbyWetter(c, nowMs, animS);
                 } else {
-                    zeichneMorgenUebersicht(c, nowMs, animS);
+                    zeichneEinheitlicheStory(c, seg, nowMs, animS);
                 }
-            } catch (RuntimeException ignored) {
-                // never crash the host app on a drawing error
-            }
+            } catch (RuntimeException ignored) {}
             c.restore();
         }
 
-        // ==== PHASE 1: "Mein Tag" overview + hourly card + briefing bar =============================================
+        // ==== UNIFIED STORY PLAYER ==================================================================================
 
-        private void zeichneMorgenUebersicht(Canvas c, long nowMs, float animS) {
-            boolean hatLeiste = status != null && status.aktiv && status.seg != null && !"aus".equals(status.ansicht);
+        private void zeichneEinheitlicheStory(Canvas c, MorgenDaten.Segment seg, long nowMs, float animS) {
+            String art = seg.art;
+            float prog = aktiverFortschritt(nowMs);
+            MorgenDaten.MorgenInfo mi = (status.morgen != null) ? status.morgen : letztesMorgen;
+            MorgenDaten.Meldung it = status.aktuelleMeldung();
+            boolean isNews = "meldung".equals(art) || "titel".equals(art) || "mehr".equals(art) || "text".equals(art);
 
-            // Soft left scrim for effortless text legibility on bright skies/snow
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            p.setShader(linksScrim);
-            c.drawRect(0, 0, 640, 290, p);
-            p.setShader(null);
+            // 1. Backdrop per segment type
+            if (isNews) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0xFF0A1018);
+                c.drawRect(0, 0, W, H, p);
+                Bitmap blur = it != null ? weichBilder.get(it.bild) : null;
+                if (blur != null && !blur.isRecycled()) {
+                    bildP.setAlpha(155);
+                    srcR.set(0, 0, blur.getWidth(), blur.getHeight());
+                    rf.set(-20, -20, W + 20, H + 20);
+                    c.drawBitmap(blur, srcR, rf, bildP);
+                    bildP.setAlpha(255);
+                } else {
+                    p.setColor(0xFFFFFFFF);
+                    p.setShader("eil".equals(status.art) ? bgEil : bgNews);
+                    c.drawRect(0, 0, W, H, p);
+                    p.setShader(null);
+                }
+                p.setColor(0xFFFFFFFF);
+                p.setShader(scrimNews);
+                c.drawRect(0, 0, W, H, p);
+                p.setShader(null);
+            } else if ("kalender".equals(art) || "muell".equals(art) || "liste".equals(art)) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0xFFFFFFFF);
+                p.setShader(scrimDim);
+                c.drawRect(0, 0, W, H, p);
+                p.setShader(null);
+            } else {
+                // Live Wetter / Begrüßung / Abschied: full bright weather scene + seamless edge scrims
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0xFFFFFFFF);
+                p.setShader(scrimLinks); c.drawRect(0, 0, 620, H, p);
+                p.setShader(scrimOben);  c.drawRect(0, 0, W, 100, p);
+                p.setShader(scrimUnten); c.drawRect(0, 310, W, H - 310, p);
+                p.setShader(null);
+            }
 
-            // Back button (58, 50) radius 28
-            kreisKnopf(c, "zurueck", 58, 50, 28, false, "mdi:chevron-left", 26);
+            // 2. Unified Top Segment Progress Bar
+            zeichneSegmentLeiste(c, seg, prog);
 
-            // Date & time
+            // 3. Unified Header Row (Chapter Pill + Counter + Close)
             Calendar cal = Calendar.getInstance();
             cal.setTimeInMillis(nowMs);
-            int hh = cal.get(Calendar.HOUR_OF_DAY), mm = cal.get(Calendar.MINUTE);
+            String datumKurz = WT[cal.get(Calendar.DAY_OF_WEEK) - 1] + ", " + cal.get(Calendar.DAY_OF_MONTH) + ". " + MON[cal.get(Calendar.MONTH)];
+            String uhrKurz = String.format(Locale.ROOT, "%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE));
+            int grpN = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
+            int grpIdx = Math.max(0, Math.min(grpN - 1, seg.gruppe));
+            String segZaehler = "Segment " + (grpIdx + 1) + " von " + grpN;
+
+            int dotCol = 0xFF6FB3F2;
+            String pillTitel = !seg.kategorie.isEmpty() ? seg.kategorie : (!seg.label.isEmpty() ? seg.label : "Mein Tag");
+            String pillSub = datumKurz + " · " + uhrKurz;
+
+            if ("wetter".equals(art) || "intro".equals(art)) {
+                dotCol = 0xFFF2B45C; pillTitel = "Wetter"; pillSub = "Heute · " + datumKurz;
+            } else if ("begruessung".equals(art)) {
+                dotCol = 0xFFFFB36B; pillTitel = "Begrüßung"; pillSub = datumKurz + " · " + uhrKurz;
+            } else if ("abschied".equals(art)) {
+                dotCol = 0xFFB49CF2; pillTitel = "Abschied"; pillSub = datumKurz + " · " + uhrKurz;
+            } else if ("kalender".equals(art)) {
+                dotCol = 0xFF6FB3F2; pillTitel = "Kalender";
+                int tn = mi != null ? Math.max(mi.termine.size(), mi.termineDetail.size()) : 0;
+                pillSub = datumKurz + " · " + (tn == 1 ? "1 Termin" : tn + " Termine");
+            } else if ("muell".equals(art)) {
+                dotCol = 0xFFF2D35C; pillTitel = "Müllabfuhr"; pillSub = datumKurz;
+            } else if ("liste".equals(art)) {
+                dotCol = 0xFF6CC483; pillTitel = "Einkaufsliste";
+                int ln = mi != null ? mi.liste : 0;
+                pillSub = ln == 1 ? "1 Eintrag" : ln + " Einträge";
+            } else if (isNews && it != null) {
+                dotCol = status.quelleFarbe(it.q);
+                String qn = status.quelleName(it.q);
+                String vor = MorgenDaten.vorText(it.z, nowMs);
+                pillTitel = !seg.kategorie.isEmpty() ? seg.kategorie : qn;
+                StringBuilder sb = new StringBuilder();
+                if (!qn.isEmpty() && !qn.equalsIgnoreCase(pillTitel)) sb.append(qn);
+                if (!vor.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append(vor); }
+                if (seg.gruppeN > 1) { if (sb.length() > 0) sb.append(" · "); sb.append(seg.gruppeI + 1).append(" von ").append(seg.gruppeN); }
+                if ("mehr".equals(art)) { if (sb.length() > 0) sb.append(" · "); sb.append("mehr dazu"); }
+                pillSub = sb.toString();
+            }
+            zeichneKopfZeile(c, dotCol, pillTitel, pillSub, segZaehler);
+
+            // 4. Center Content tailored to segment type
+            if ("wetter".equals(art) || "intro".equals(art)) {
+                zeichneWetterInhalt(c, seg, mi, prog);
+            } else if ("begruessung".equals(art) || "abschied".equals(art)) {
+                zeichneRahmenInhalt(c, seg, mi, cal, prog, "abschied".equals(art));
+            } else if ("kalender".equals(art)) {
+                zeichneKalenderInhalt(c, seg, mi, prog);
+            } else if ("muell".equals(art)) {
+                zeichneMuellInhalt(c, seg, mi, prog);
+            } else if ("liste".equals(art)) {
+                zeichneListeInhalt(c, seg, mi, prog);
+            } else {
+                zeichneNachrichtInhalt(c, seg, it, prog, nowMs);
+            }
+
+            // 5. Unified Bottom Transport Control Bar
+            String modeLbl = !status.modusLabel.isEmpty() ? status.modusLabel
+                : (status.sprecherName.isEmpty() ? "Wird vorgelesen" : status.sprecherName + " liest vor");
+            String nextLbl = !seg.naechstes.isEmpty() ? ("Als Nächstes: " + seg.naechstes) : "Letztes Segment";
+            boolean mitMehr = isNews && !"mehr".equals(art) && it != null && !it.x.isEmpty();
+            zeichneFussLeiste(c, modeLbl, nextLbl, mitMehr, animS);
+        }
+
+        // ---- Segment 1/7: Wetter Content ---------------------------------------------------------------------------
+
+        private void zeichneWetterInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.MorgenInfo mi, float prog) {
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTypeface(tfLight); txt.setTextSize(34); txt.setColor(0xFFF2F4F7);
+            c.drawText("Dein Wetter heute", 36, 132, txt);
+
+            Integer tVal = (wetter != null && wetter.temp != null) ? (int) Math.round(wetter.temp) : (mi != null ? mi.wxTemp : null);
+            String condStr = (wetter != null && wetter.zustand != null && !wetter.zustand.isEmpty()) ? lage.name() : "";
+            if (tVal != null) {
+                String tStr = tVal + "°";
+                txt.setTypeface(tfThin); txt.setTextSize(72); txt.setColor(0xFFFFFFFF);
+                c.drawText(tStr, 34, 214, txt);
+                float tx = 34 + txt.measureText(tStr) + 14;
+                if (!condStr.isEmpty()) {
+                    txt.setTypeface(tfMed); txt.setTextSize(21); txt.setColor(0xFFECEBE8);
+                    c.drawText(condStr, tx, 184, txt);
+                }
+                StringBuilder meta = new StringBuilder();
+                if (mi != null && mi.wxLo != null) meta.append("Tief ").append(mi.wxLo).append("°");
+                if (mi != null && mi.wxHi != null) { if (meta.length() > 0) meta.append(" · "); meta.append("Hoch ").append(mi.wxHi).append("°"); }
+                Integer wnd = (wetter != null && wetter.wind != null) ? (int) Math.round(wetter.wind) : (mi != null ? mi.wxWind : null);
+                if (wnd != null && wnd > 0) { if (meta.length() > 0) meta.append(" · "); meta.append("Wind ").append(wnd).append(" km/h"); }
+                if (meta.length() > 0) {
+                    txt.setTypeface(tfNorm); txt.setTextSize(14.5f); txt.setColor(0xCCDCE6F0);
+                    c.drawText(meta.toString(), tx, 208, txt);
+                }
+            }
+
+            // Weather hint pills
+            float py = 238;
+            if (mi != null && !mi.schirm.isEmpty()) {
+                zeichneHinweisPill(c, 36, py, mi.schirm, 0x30F2B45C, 0x8CF2B45C, 0xFFFAD089, true);
+                py += 40;
+            }
+            if (mi != null && mi.glatt) {
+                zeichneHinweisPill(c, 36, py, "Glätte möglich – vorsichtig unterwegs", 0x307AB8F5, 0x8C7AB8F5, 0xFFBFE3FF, true);
+                py += 40;
+            }
+            if (py == 238 && !heute.zusammenfassung.isEmpty()) {
+                zeichneHinweisPill(c, 36, py, heute.zusammenfassung, 0x1AFFFFFF, 0x38FFFFFF, 0xFFDCE5EE, false);
+            }
+
+            // Right glass hourly card (x=446..927, y=94..316)
+            zeichneGlasKarte(c, 446, 94, 481, 222, 0xC40E1723, 0x24FFFFFF, 20);
+            txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(0xFF9CC8EE);
+            c.drawText("HEUTE IM VERLAUF", 468, 122, txt);
+            if (!heute.zusammenfassung.isEmpty()) {
+                txt.setTextAlign(Paint.Align.RIGHT);
+                txt.setTypeface(tfNorm); txt.setTextSize(12.5f); txt.setColor(0xB4FFFFFF);
+                c.drawText(kuerzen(txt, heute.zusammenfassung, 290), 906, 122, txt);
+                txt.setTextAlign(Paint.Align.LEFT);
+            }
+            zeichneStundenGraphKompakt(c, 468, 136, 438, 162);
+
+            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+        }
+
+        // ---- Begrüßung / Abschied Content --------------------------------------------------------------------------
+
+        private void zeichneRahmenInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.MorgenInfo mi, Calendar cal, float prog, boolean abschied) {
+            int hh = cal.get(Calendar.HOUR_OF_DAY);
+            String titel;
+            if (abschied) {
+                titel = hh < 12 ? "Guten Start in den Tag" : "Einen schönen Tag noch";
+            } else {
+                titel = hh < 11 ? "Guten Morgen" : (hh < 18 ? "Hallo" : "Guten Abend");
+                if (mi != null && !mi.name.isEmpty()) titel += ", " + mi.name;
+            }
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTypeface(tfLight); txt.setTextSize(46); txt.setColor(0xFFFFFFFF);
+            c.drawText(titel, 38, 184, txt);
+
             String datum = WT[cal.get(Calendar.DAY_OF_WEEK) - 1] + ", " + cal.get(Calendar.DAY_OF_MONTH) + ". "
-                + MON[cal.get(Calendar.MONTH)] + " · " + String.format(Locale.ROOT, "%02d:%02d", hh, mm);
-            datumP.setColor(0xC8FFFFFF);
-            c.drawText(datum, 102, 37, datumP);
+                + MON[cal.get(Calendar.MONTH)] + " · " + String.format(Locale.ROOT, "%02d:%02d Uhr", hh, cal.get(Calendar.MINUTE));
+            txt.setTypeface(tfNorm); txt.setTextSize(18); txt.setColor(0xCCDCE6F0);
+            c.drawText(datum, 40, 220, txt);
 
-            // Greeting
-            MorgenDaten.MorgenInfo mi = (status != null && "morgen".equals(status.art) && status.morgen != null) ? status.morgen : letztesMorgen;
+            if (wetter != null && wetter.temp != null) {
+                zeichneHinweisPill(c, 38, 248, Math.round(wetter.temp) + "° · " + lage.name(), 0x24FFFFFF, 0x42FFFFFF, 0xFFECEBE8, false);
+            }
+            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20.5f);
+        }
+
+        // ---- Kalender Content --------------------------------------------------------------------------------------
+
+        private void zeichneKalenderInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.MorgenInfo mi, float prog) {
+            zeichneGlasKarte(c, 36, 94, 891, 228, 0xD4141F2E, 0x1EFFFFFF, 20);
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(0xFF7AB8F5);
+            c.drawText("HEUTE IM KALENDER", 58, 124, txt);
+
+            List<MorgenDaten.TerminDetail> list = mi != null ? mi.termineDetail : java.util.Collections.<MorgenDaten.TerminDetail>emptyList();
+            if (list.isEmpty()) {
+                txt.setTypeface(tfNorm); txt.setTextSize(17); txt.setColor(0xAAFFFFFF);
+                c.drawText("Heute stehen keine weiteren Termine an.", 58, 178, txt);
+            } else {
+                int max = Math.min(4, list.size());
+                for (int i = 0; i < max; i++) {
+                    MorgenDaten.TerminDetail td = list.get(i);
+                    float rx = 58 + (i / 2) * 434;
+                    float ry = 142 + (i % 2) * 74;
+                    zeichneAgendaZeile(c, rx, ry, 412, td);
+                }
+            }
+            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+        }
+
+        private void zeichneAgendaZeile(Canvas c, float x, float y, float w, MorgenDaten.TerminDetail td) {
+            zeichneGlasKarte(c, x, y, w, 60, 0x0EFFFFFF, 0x18FFFFFF, 14);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(td.farbe);
+            rf.set(x + 12, y + 12, x + 16, y + 48);
+            c.drawRoundRect(rf, 2, 2, p);
+
+            txt.setTypeface(tfMed); txt.setTextSize(15); txt.setColor(td.farbe);
+            c.drawText(td.zeit.isEmpty() ? "Heute" : td.zeit, x + 28, y + 36, txt);
+
+            txt.setTypeface(tfMed); txt.setTextSize(16.5f); txt.setColor(0xFFFFFFFF);
+            c.drawText(kuerzen(txt, td.titel, w - 102), x + 90, y + (td.ort.isEmpty() && td.bis.isEmpty() ? 36 : 29), txt);
+
+            String sub = td.ort;
+            if (!td.bis.isEmpty()) sub = (sub.isEmpty() ? "" : sub + " · ") + td.zeit + "–" + td.bis;
+            if (!sub.isEmpty()) {
+                txt.setTypeface(tfNorm); txt.setTextSize(13); txt.setColor(0xB8B9C8D8);
+                c.drawText(kuerzen(txt, sub, w - 102), x + 90, y + 48, txt);
+            }
+        }
+
+        // ---- Müll Content ------------------------------------------------------------------------------------------
+
+        private void zeichneMuellInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.MorgenInfo mi, float prog) {
+            zeichneGlasKarte(c, 36, 94, 891, 228, 0xD4141F2E, 0x1EFFFFFF, 20);
+            txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(0xFFF2D35C);
+            c.drawText("MÜLLABFUHR", 58, 124, txt);
+
+            String mu = mi != null ? mi.muell : "";
+            int col = mu.toLowerCase(Locale.ROOT).contains("papier") ? 0xFF6FB3F2
+                : (mu.toLowerCase(Locale.ROOT).contains("gelb") ? 0xFFE8C23A
+                : (mu.toLowerCase(Locale.ROOT).contains("bio") ? 0xFFA06E46 : 0xFF8FA3B5));
+            zeichneGlasKarte(c, 58, 152, 74, 74, WetterLage.alpha(col, .24f), WetterLage.alpha(col, .52f), 18);
+            drawIcon(c, "mdi:trash-can-outline", 77, 171, 36, col);
+
+            txt.setTypeface(tfMed); txt.setTextSize(28); txt.setColor(0xFFFFFFFF);
+            c.drawText(mu.isEmpty() ? "Keine Abholung geplant" : kuerzen(txt, mu, 730), 154, 192, txt);
+            txt.setTypeface(tfNorm); txt.setTextSize(15.5f); txt.setColor(0xB8DCE6F0);
+            c.drawText("Rechtzeitig an die Straße stellen", 154, 222, txt);
+
+            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+        }
+
+        // ---- Einkaufsliste Content ---------------------------------------------------------------------------------
+
+        private void zeichneListeInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.MorgenInfo mi, float prog) {
+            zeichneGlasKarte(c, 36, 94, 891, 228, 0xD4141F2E, 0x1EFFFFFF, 20);
+            txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(0xFF6CC483);
+            c.drawText("EINKAUFSLISTE", 58, 124, txt);
+
+            List<String> itms = mi != null ? mi.listeItems : java.util.Collections.<String>emptyList();
+            if (itms.isEmpty()) {
+                int cnt = mi != null ? mi.liste : 0;
+                txt.setTypeface(tfLight); txt.setTextSize(26); txt.setColor(0xFFFFFFFF);
+                c.drawText(cnt == 1 ? "1 offener Eintrag" : cnt + " offene Einträge", 58, 186, txt);
+            } else {
+                int max = Math.min(8, itms.size());
+                for (int i = 0; i < max; i++) {
+                    float ix = 58 + (i / 4) * 430;
+                    float iy = 160 + (i % 4) * 38;
+                    linie.setStrokeWidth(1.8f); linie.setColor(0xB46CC483);
+                    c.drawCircle(ix + 7, iy - 5, 6, linie);
+                    txt.setTypeface(tfNorm); txt.setTextSize(17); txt.setColor(0xFFECEBE8);
+                    c.drawText(kuerzen(txt, itms.get(i), 380), ix + 24, iy, txt);
+                }
+            }
+            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+        }
+
+        // ---- News Segment Content (Headline + Spoken Summary Karaoke + Photo + Next Card) --------------------------
+
+        private void zeichneNachrichtInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.Meldung it, float prog, long nowMs) {
+            MorgenDaten.Meldung nach = status.naechsteMeldung();
+            boolean hatRechts = it != null && (!it.bild.isEmpty() || nach != null);
+            float mainW = hatRechts ? 636 : (W - 76);
+
+            float textY = 122;
+            if (it != null && !it.t.isEmpty()) {
+                // Compact sky-blue headline (up to 2 lines)
+                txt.setTextAlign(Paint.Align.LEFT);
+                txt.setTypeface(tfMed); txt.setTextSize(19);
+                txt.setColor("eil".equals(status.art) ? 0xFFFF9A92 : 0xFFA8CEF0);
+                float endY = zeichneMehrzeilig(c, it.t, txt, 38, 122, mainW, 25, 2);
+
+                // Source-colored accent bar
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(status.quelleFarbe(it.q));
+                rf.set(38, endY + 12, 86, endY + 15.5f);
+                c.drawRoundRect(rf, 2, 2, p);
+                textY = endY + 34;
+            }
+
+            // Large live-karaoke spoken text (auto-scrolling smoothly!)
+            float fs = seg.text.length() > 260 ? 22f : (seg.text.length() > 160 ? 24.5f : 26.5f);
+            karP.setTypeface(tfLight); karP.setTextSize(fs);
+            karActP.setTypeface(tfMed); karActP.setTextSize(fs);
+            karLayout.bauen(seg.text, karP, mainW, fs * 1.40f);
+            karScrollY = zeichneKaraoke(c, karLayout, seg.text, prog, status.karaoke, 38, textY, mainW, 468 - textY, karScrollY);
+
+            // Right column: Sharp Article Photo + "DANACH" preview card
+            if (hatRechts) {
+                Bitmap foto = it != null ? scharfBilder.get(it.bild) : null;
+                if (foto != null && !foto.isRecycled()) {
+                    zeichneBildGerundet(c, foto, 702, 96, 225, 138, 16);
+                } else if (it != null && !it.bild.isEmpty()) {
+                    zeichneGlasKarte(c, 702, 96, 225, 138, 0x16FFFFFF, 0x24FFFFFF, 16);
+                    drawIcon(c, "mdi:newspaper-variant-outline", 798, 148, 34, 0x48FFFFFF);
+                }
+
+                float nextTop = (it != null && !it.bild.isEmpty()) ? 252 : 96;
+                float nextH = 450 - nextTop;
+                if (nach != null || !seg.naechstes.isEmpty()) {
+                    zeichneGlasKarte(c, 702, nextTop, 225, nextH, 0x12FFFFFF, 0x20FFFFFF, 16);
+                    hits.add(new Hit("naechste", 702, nextTop, 927, nextTop + nextH));
+
+                    txt.setTypeface(tfMed); txt.setTextSize(11.5f); txt.setColor(0x88FFFFFF);
+                    String dan = !seg.naechstes.isEmpty() ? ("DANACH · " + seg.naechstes.toUpperCase(Locale.ROOT)) : "ALS NÄCHSTES";
+                    c.drawText(kuerzen(txt, dan, 189), 720, nextTop + 28, txt);
+
+                    if (nach != null) {
+                        int qc = status.quelleFarbe(nach.q);
+                        p.setStyle(Paint.Style.FILL); p.setColor(qc);
+                        c.drawCircle(724, nextTop + 49, 4, p);
+                        txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(qc);
+                        c.drawText(status.quelleName(nach.q), 734, nextTop + 53, txt);
+
+                        txt.setTypeface(tfNorm); txt.setTextSize(14.5f); txt.setColor(0xFFECF0F5);
+                        zeichneMehrzeilig(c, nach.t, txt, 720, nextTop + 78, 189, 20, 4);
+                    } else {
+                        txt.setTypeface(tfLight); txt.setTextSize(18); txt.setColor(0xFFECF0F5);
+                        c.drawText(kuerzen(txt, seg.naechstes, 189), 720, nextTop + 68, txt);
+                    }
+                }
+            }
+        }
+
+        // ---- Standby (when opened without active playback or minimized) --------------------------------------------
+
+        private void zeichneStandbyWetter(Canvas c, long nowMs, float animS) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFFFFFFFF);
+            p.setShader(scrimLinks); c.drawRect(0, 0, 620, H, p);
+            p.setShader(scrimUnten); c.drawRect(0, 310, W, H - 310, p);
+            p.setShader(null);
+
+            // Back circle
+            p.setColor(0x24FFFFFF); c.drawCircle(54, 52, 24, p);
+            drawIcon(c, "mdi:chevron-left", 42, 40, 24, 0xFFECEBE8);
+            hits.add(new Hit("zurueck", 24, 22, 84, 82));
+
+            Calendar cal = Calendar.getInstance(); cal.setTimeInMillis(nowMs);
+            int hh = cal.get(Calendar.HOUR_OF_DAY);
             String gruss = hh < 11 ? "Guten Morgen" : (hh < 18 ? "Hallo" : "Guten Abend");
-            if (mi != null && !mi.name.isEmpty()) gruss += ", " + mi.name;
-            schattenText(c, gruss, 102, 79, grussP);
+            txt.setTypeface(tfLight); txt.setTextSize(40); txt.setColor(0xFFFFFFFF);
+            c.drawText(gruss, 96, 68, txt);
 
-            // Current temperature + condition
             if (wetter != null && wetter.temp != null) {
                 String tStr = Math.round(wetter.temp) + "°";
-                schattenText(c, tStr, 100, 134, tempP);
-                float tw = tempP.measureText(tStr);
-                schattenText(c, lage.name(), 100 + tw + 14, 126, zustP);
+                txt.setTypeface(tfThin); txt.setTextSize(68); txt.setColor(0xFFFFFFFF);
+                c.drawText(tStr, 36, 168, txt);
+                txt.setTypeface(tfMed); txt.setTextSize(21); txt.setColor(0xFFECEBE8);
+                c.drawText(lage.name(), 36 + txt.measureText(tStr) + 16, 152, txt);
             }
 
-            // Info chips (umbrella, ice, appointments, bins, shopping list)
-            zeichneChips(c, mi, 102, 150, 600);
+            zeichneGlasKarte(c, 36, 210, 891, 240, 0xC80E1723, 0x20FFFFFF, 22);
+            txt.setTypeface(tfMed); txt.setTextSize(13); txt.setColor(0xFF9CC8EE);
+            c.drawText("HEUTE IM VERLAUF", 58, 240, txt);
+            zeichneStundenGraphKompakt(c, 58, 254, 846, 178);
 
-            // Hourly forecast sheet ("Heute")
-            float cardTop = hatLeiste ? 268 : 298;
-            float cardH = hatLeiste ? 214 : 262;
-            zeichneHeuteKarte(c, 20, cardTop, W - 40, cardH);
-
-            // Bottom floating reading / karaoke pill bar
-            if (hatLeiste) {
-                zeichneLeiste(c, nowMs, animS);
+            if (status != null && status.aktiv && status.seg != null) {
+                zeichneFussLeiste(c, status.modusLabel.isEmpty() ? "Läuft" : status.modusLabel, "Antippen für Vollbild", false, animS);
+                hits.add(new Hit("gross", 28, 496, 460, 560));
             }
         }
 
-        private void zeichneChips(Canvas c, MorgenDaten.MorgenInfo mi, float x0, float y0, float maxW) {
-            if (mi == null || !mi.hatInhalt()) return;
-            List<Object[]> chips = new ArrayList<>();
-            if (!mi.schirm.isEmpty()) chips.add(new Object[] {"mdi:umbrella", 0xFFF2C94C, mi.schirm});
-            if (mi.glatt) chips.add(new Object[] {"mdi:snowflake-alert", 0xFFBFE3FF, "Glätte möglich"});
-            if (!mi.termine.isEmpty()) {
-                String t = mi.termine.get(0);
-                if (mi.termine.size() > 1) t += " · " + (mi.termine.size() - 1) + " weitere";
-                chips.add(new Object[] {"mdi:calendar-today", 0xFF9CC8EE, t});
-            }
-            if (!mi.muell.isEmpty()) chips.add(new Object[] {"mdi:trash-can-outline", 0xFFF2D35C, mi.muell});
-            if (mi.liste > 0) {
-                chips.add(new Object[] {"mdi:cart-outline", 0xFF6CC483, mi.liste + (mi.liste == 1 ? " Sache" : " Sachen") + " auf der Liste"});
-            }
+        // ---- Shared Unified Components -----------------------------------------------------------------------------
 
-            float cx = x0, cy = y0, h = 32, gap = 8;
-            int zeile = 0;
-            for (Object[] ch : chips) {
-                String ic = (String) ch[0];
-                int col = (Integer) ch[1];
-                String txt = (String) ch[2];
-                float tw = chipP.measureText(txt);
-                float maxChipW = maxW;
-                if (tw + 50 > maxChipW) {
-                    txt = kuerzen(chipP, txt, maxChipW - 50);
-                    tw = chipP.measureText(txt);
-                }
-                float cw = tw + 48;
-                if (cx > x0 && cx + cw > x0 + maxW) {
-                    zeile++;
-                    if (zeile >= 2) break;
-                    cx = x0;
-                    cy += h + gap;
-                }
-                rf.set(cx, cy, cx + cw, cy + h);
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0xA60D141C);
-                c.drawRoundRect(rf, 14, 14, p);
-                linie.setStrokeWidth(1f);
-                linie.setColor(0x22FFFFFF);
-                c.drawRoundRect(rf, 14, 14, linie);
+        private void zeichneSegmentLeiste(Canvas c, MorgenDaten.Segment seg, float prog) {
+            int n = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
+            int actG = Math.max(0, Math.min(n - 1, seg.gruppe));
+            float x0 = 28, totalW = W - 56, gap = n > 7 ? 5f : 7f;
+            float segW = (totalW - gap * (n - 1)) / n;
 
-                drawIcon(c, ic, cx + 10, cy + 7, 18, col);
-                chipP.setColor(0xFFECEBE8);
-                c.drawText(txt, cx + 33, cy + 21, chipP);
-                cx += cw + gap;
-            }
-        }
-
-        private void zeichneHeuteKarte(Canvas c, float x, float y, float w, float h) {
-            rf.set(x, y, x + w, y + h);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0xE8141F2F);
-            c.drawRoundRect(rf, 24, 24, p);
-            linie.setStrokeWidth(1f);
-            linie.setColor(0x1AFFFFFF);
-            c.drawRoundRect(rf, 24, 24, linie);
-
-            List<MorgenDaten.Stunde> hs = heute.stunden;
-            if (hs == null || hs.isEmpty()) {
-                kleinP.setTextSize(15);
-                kleinP.setTextAlign(Paint.Align.LEFT);
-                kleinP.setColor(0xFF9FB0C4);
-                c.drawText("Stundenvorhersage wird geladen …", x + 24, y + 36, kleinP);
-                return;
-            }
-
-            // Header summary line with highlighted precipitation word
-            String sum = heute.zusammenfassung;
-            String nw = heute.nassWort;
-            float hx = x + 24, hy = y + 30;
-            if (!nw.isEmpty() && sum.contains(nw)) {
-                int idx = sum.indexOf(nw);
-                String vor = sum.substring(0, idx);
-                String nach = sum.substring(idx + nw.length());
-                sumP.setColor(0xFFECEBE8);
-                c.drawText(vor, hx, hy, sumP);
-                hx += sumP.measureText(vor);
-                sumP.setColor(0xFF6FB3F2);
-                c.drawText(nw, hx, hy, sumP);
-                hx += sumP.measureText(nw);
-                sumP.setColor(0xFFECEBE8);
-                c.drawText(nach, hx, hy, sumP);
-            } else {
-                sumP.setColor(0xFFECEBE8);
-                c.drawText(sum, hx, hy, sumP);
-            }
-
-            // 8 hourly columns
-            int n = Math.min(8, hs.size());
-            float cx0 = x + 64, step = n > 1 ? (w - 128) / (n - 1f) : 0;
-            int gmin = 99, gmax = -99;
-            float mmax = 3.4f;
-            for (int i = 0; i < n; i++) {
-                MorgenDaten.Stunde st = hs.get(i);
-                if (st.temp < gmin) gmin = st.temp;
-                if (st.temp > gmax) gmax = st.temp;
-                if (st.mm > mmax) mmax = st.mm;
-            }
-            float span = Math.max(4f, gmax - gmin);
-            float curveBot = y + h - 52;
-            float curveSpan = Math.max(26f, Math.min(42f, h - 168));
-            float barBase = y + h - 20;
-
-            float[] px = new float[n], py = new float[n];
-            int[] cols = new int[n];
-            float[] stops = new float[n];
-            for (int i = 0; i < n; i++) {
-                MorgenDaten.Stunde st = hs.get(i);
-                px[i] = cx0 + i * step;
-                py[i] = curveBot - (st.temp - gmin) / span * curveSpan;
-                cols[i] = MorgenDaten.tempFarbe(st.temp);
-                stops[i] = n > 1 ? i / (float) (n - 1) : 0f;
-            }
-
-            // Wavy rain bars behind curve
-            for (int i = 0; i < n; i++) {
-                MorgenDaten.Stunde st = hs.get(i);
-                boolean nass = MorgenDaten.istNass(st);
-                float mm = nass ? st.mm : 0f;
-                if (mm >= 0.1f) {
-                    float bh = Math.max(4f, Math.min(34f, mm / mmax * 34f));
-                    zeichneWellenBalken(c, px[i] - 22, 44, barBase, bh);
-                }
-            }
-
-            // Smooth cubic temperature curve
-            if (n >= 2) {
-                kurvePath.reset();
-                kurvePath.moveTo(px[0], py[0]);
-                for (int i = 0; i < n - 1; i++) {
-                    int i0 = Math.max(0, i - 1), i2 = i + 1, i3 = Math.min(n - 1, i + 2);
-                    float c1x = px[i] + (px[i2] - px[i0]) / 6f;
-                    float c1y = py[i] + (py[i2] - py[i0]) / 6f;
-                    float c2x = px[i2] - (px[i3] - px[i]) / 6f;
-                    float c2y = py[i2] - (py[i3] - py[i]) / 6f;
-                    kurvePath.cubicTo(c1x, c1y, c2x, c2y, px[i2], py[i2]);
-                }
-                String kKey = Math.round(px[0]) + "|" + Math.round(px[n - 1]) + "|" + cols[0] + "|" + cols[n - 1] + "|" + n;
-                if (kurveShader == null || !kKey.equals(kurveKey)) {
-                    kurveKey = kKey;
-                    kurveShader = new LinearGradient(px[0], 0, px[n - 1], 0, cols, stops, Shader.TileMode.CLAMP);
-                }
-                linie.setColor(0xFFFFFFFF);
-                linie.setStrokeWidth(2.8f);
-                linie.setShader(kurveShader);
-                c.drawPath(kurvePath, linie);
-                linie.setShader(null);
-            }
-
-            // Dots + column texts & colourful weather icons
-            kleinP.setTextAlign(Paint.Align.CENTER);
-            mittelP.setTextAlign(Paint.Align.CENTER);
-            for (int i = 0; i < n; i++) {
-                MorgenDaten.Stunde st = hs.get(i);
-                float cx = px[i];
-
-                // Hour label
-                kleinP.setTextSize(13.5f);
-                kleinP.setColor(0xFF9FB0C4);
-                c.drawText(st.stunde + " Uhr", cx, y + 56, kleinP);
-
-                // Weather vector icon (28 x 28)
-                zeichneWetterIcon(c, MorgenDaten.effCond(st), st.nacht, cx - 14, y + 65, 28);
-
-                // Curve dot & temperature label
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0xFFECEBE8);
-                c.drawCircle(cx, py[i], 4f, p);
-                mittelP.setTextSize(15.5f);
-                mittelP.setColor(0xFFECEBE8);
-                c.drawText(st.temp + "°", cx, py[i] - 11, mittelP);
-
-            // Rain probability (%) and mm
-            float infoY = curveBot + 20;
-                if (st.regenPct != null) {
-                    String ptTxt = st.regenPct + " %";
-                    kleinP.setTextSize(12.5f);
-                    float tw = kleinP.measureText(ptTxt);
-                    drawDrop(c, cx - tw * .5f - 6, infoY - 9, 9, 0xFF5AA8FF);
-                    kleinP.setColor(0xFF8FC0FF);
-                    c.drawText(ptTxt, cx + 5, infoY, kleinP);
-                }
-                if (MorgenDaten.istNass(st) && st.mm >= 0.1f) {
-                    kleinP.setTextSize(11.5f);
-                    kleinP.setColor(0xFF8FBAF0);
-                    c.drawText(MorgenDaten.mmText(st.mm), cx, y + h - 6, kleinP);
-                }
-            }
-            kleinP.setTextAlign(Paint.Align.LEFT);
-            mittelP.setTextAlign(Paint.Align.LEFT);
-        }
-
-        private void zeichneWellenBalken(Canvas c, float x, float w, float yb, float h) {
-            float yt = yb - h, amp = Math.min(2.8f, h * .25f);
-            wavePath.reset();
-            wavePath.moveTo(x, h);
-            wavePath.lineTo(x, amp * (float) Math.sin(x / 14f));
-            for (int k = 1; k <= 10; k++) {
-                float xx = x + w * k / 10f;
-                wavePath.lineTo(xx, amp * (float) Math.sin(xx / 14f));
-            }
-            wavePath.lineTo(x + w, h);
-            wavePath.close();
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            p.setShader(regenBarShader);
-            c.save();
-            c.translate(0, yt);
-            c.drawPath(wavePath, p);
-            c.restore();
-            p.setShader(null);
-        }
-
-        private void zeichneLeiste(Canvas c, long nowMs, float animS) {
-            boolean mrg = "morgen".equals(status.art) && status.seg.id.isEmpty();
-            float bx = mrg ? 20 : 120, bw = W - 2 * bx, by = H - 88, bh = 74, rad = 37;
-            rf.set(bx, by, bx + bw, by + bh);
-
-            // Soft drop shadow (solid dark offset pill, zero blur cost)
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x55000000);
-            c.drawRoundRect(bx, by + 5, bx + bw, by + bh + 6, rad, rad, p);
-
-            // Pill background
-            p.setColor(0xEB18202A);
-            c.drawRoundRect(rf, rad, rad, p);
-            linie.setStrokeWidth(1f);
-            linie.setColor(0x1EFFFFFF);
-            c.drawRoundRect(rf, rad, rad, linie);
-
-            // Warm or cool pulsing orb
-            float cy = by + bh * .5f;
-            zeichneOrb(c, bx + 37, cy, 26, "morgen".equals(status.art), animS, status.pause);
-
-            // Right control buttons
-            float stopX = bx + bw - 34;
-            kreisKnopf(c, "stopp", stopX, cy, 22, false, "mdi:close", 21);
-            float pauseX;
-            if (mrg) {
-                float nextX = stopX - 54;
-                kreisKnopf(c, "naechste", nextX, cy, 22, false, "mdi:skip-next", 22);
-                pauseX = nextX - 54;
-            } else {
-                pauseX = stopX - 54;
-            }
-            kreisKnopf(c, "pause", pauseX, cy, 22, false, status.pause ? "mdi:play" : "mdi:pause", 22);
-
-            float textL = bx + 76;
-            float textR = pauseX - 34;
-
-            if (mrg) {
-                // 2-line karaoke briefing text with smooth auto-scroll
-                float fs = 15.5f, lh = 21f;
-                karaokeP.setTextSize(fs);
-                karaokeAktivP.setTextSize(fs);
-                barLayout.bauen(status.seg.text, karaokeP, Math.max(120, textR - textL), lh);
-                float prog = aktiverFortschritt(nowMs);
-                float boxTop = by + 13, boxH = 46;
-                barScrollY = zeichneKaraoke(c, barLayout, status.seg.text, prog, status.karaoke, textL, boxTop, textR - textL, boxH, barScrollY);
-            } else {
-                // Minimized news bar: tap body to re-expand
-                hits.add(new Hit("gross", bx, by, pauseX - 28, by + bh));
-                MorgenDaten.Meldung it = status.aktuelleMeldung();
-                Bitmap bm = it != null ? scharfBilder.get(it.bild) : null;
-                if (bm != null && !bm.isRecycled()) {
-                    zeichneBildGerundet(c, bm, textL, cy - 22, 76, 44, 10);
-                    textL += 88;
-                }
-                float welleW = 80;
-                float titleW = Math.max(80, textR - textL - welleW - 12);
-                String name = status.sprecherName.isEmpty() ? "Wird vorgelesen" : status.sprecherName + " liest vor";
-                kleinP.setTextSize(12);
-                kleinP.setColor(0xFF9AD0FF);
-                c.drawText(name + " · " + (status.i + 1) + " von " + Math.max(1, status.n), textL, by + 29, kleinP);
-                mittelP.setTextSize(14.5f);
-                mittelP.setColor(0xFFECEBE8);
-                String titel = it != null ? it.t : status.seg.text;
-                c.drawText(kuerzen(mittelP, titel, titleW), textL, by + 50, mittelP);
-                zeichneWelle(c, textR - welleW, cy, 10, 26, animS, status.pause);
-            }
-
-            // Bottom edge progress bar clipped inside pill
-            float segProg = status.n > 0 ? Math.max(0f, Math.min(1f, (status.i + aktiverFortschritt(nowMs)) / (float) status.n)) : 0f;
-            clipPath.reset();
-            clipPath.addRoundRect(rf, rad, rad, Path.Direction.CW);
-            c.save();
-            c.clipPath(clipPath);
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            p.setShader(progShader);
-            c.drawRect(bx, by + bh - 3.5f, bx + bw * segProg, by + bh, p);
-            p.setShader(null);
-            c.restore();
-        }
-
-        // ==== PHASE 2: Full-screen News Story / Karaoke View ========================================================
-
-        private void zeichneStory(Canvas c, long nowMs, float animS) {
-            MorgenDaten.Segment seg = status.seg;
-            MorgenDaten.Meldung it = status.aktuelleMeldung();
-            MorgenDaten.Meldung nach = status.naechsteMeldung();
-            boolean mehr = "mehr".equals(seg.art);
-            boolean nurText = "intro".equals(seg.art) || "text".equals(seg.art) || it == null;
-            float prog = aktiverFortschritt(nowMs);
-
-            // 1. Backdrop: dark base + hardware-blurred article photo OR mood gradient
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFF0B0F13);
-            c.drawRect(0, 0, W, H, p);
-
-            Bitmap blur = it != null ? weichBilder.get(it.bild) : null;
-            if (blur != null && !blur.isRecycled()) {
-                bildP.setAlpha(142);
-                srcR.set(0, 0, blur.getWidth(), blur.getHeight());
-                rf.set(-24, -24, W + 24, H + 24);
-                c.drawBitmap(blur, srcR, rf, bildP);
-                bildP.setAlpha(255);
-            } else {
-                p.setColor(0xFFFFFFFF);
-                p.setShader("morgen".equals(status.art) ? storyMorgenBg : ("eil".equals(status.art) ? storyEilBg : storyNewsBg));
-                c.drawRect(0, 0, W, H, p);
-                p.setShader(null);
-            }
-
-            // Readability scrim
-            if (mehr) {
-                p.setColor(0xB8080B0F);
-                c.drawRect(0, 0, W, H, p);
-            } else {
-                p.setColor(0xFFFFFFFF);
-                p.setShader(storyScrimTitel);
-                c.drawRect(0, 0, W, H, p);
-                p.setShader(null);
-            }
-
-            // 2. Top segmented progress bar
-            int segN = Math.max(1, status.n);
-            float segGap = 5f, totalW = W - 60;
-            float segW = (totalW - segGap * (segN - 1)) / segN;
-            for (int k = 0; k < segN; k++) {
-                float sx = 30 + k * (segW + segGap);
+            txt.setTextAlign(Paint.Align.LEFT);
+            for (int k = 0; k < n; k++) {
+                float sx = x0 + k * (segW + gap);
                 p.setColor(0x38FFFFFF);
-                rf.set(sx, 18, sx + segW, 22);
-                c.drawRoundRect(rf, 2, 2, p);
-                float fill = k < status.i ? 1f : (k == status.i ? prog : 0f);
+                rf.set(sx, 14, sx + segW, 18.5f);
+                c.drawRoundRect(rf, 2.5f, 2.5f, p);
+
+                float fill = 0f;
+                if (k < actG) fill = 1f;
+                else if (k == actG) fill = Math.max(0.05f, Math.min(1f, (seg.gruppeI + prog) / Math.max(1f, seg.gruppeN)));
                 if (fill > 0.005f) {
-                    p.setColor(0xFFFFFFFF);
-                    rf.set(sx, 18, sx + segW * fill, 22);
-                    c.drawRoundRect(rf, 2, 2, p);
+                    p.setColor(k == actG ? 0xF8FFFFFF : 0xE6FFFFFF);
+                    rf.set(sx, 14, sx + segW * fill, 18.5f);
+                    c.drawRoundRect(rf, 2.5f, 2.5f, p);
+                }
+
+                if (!status.gruppen.isEmpty()) {
+                    String lbl = status.gruppen.get(k).label;
+                    txt.setTypeface(k == actG ? tfMed : tfNorm);
+                    txt.setTextSize(10.5f);
+                    txt.setColor(k == actG ? 0xF0FFFFFF : (k < actG ? 0xA0FFFFFF : 0x60FFFFFF));
+                    c.drawText(kuerzen(txt, lbl, segW - 2), sx + 1, 31, txt);
                 }
             }
-
-            // 3. Top header row (minimize, category, close/stop)
-            kreisKnopf(c, "klein", 52, 56, 22, false, "mdi:chevron-down", 22);
-            drawIcon(c, "eil".equals(status.art) ? "mdi:alert-decagram" : "mdi:newspaper-variant-outline", 86, 47, 18, 0xCCFFFFFF);
-            String kopf = "eil".equals(status.art) ? "Eilmeldung" : ("morgen".equals(status.art) ? "Mein Tag" : "Nachrichten");
-            if (it != null) {
-                int idx = status.aktuelleMeldungIndex();
-                if (idx >= 0) kopf += " · Meldung " + (idx + 1) + " von " + status.items.size();
-            }
-            if (mehr) kopf += " · mehr dazu";
-            datumP.setColor(0xCCFFFFFF);
-            c.drawText(kopf, 111, 61, datumP);
-            kreisKnopf(c, "stopp", W - 56, 56, 25, false, "mdi:close", 23);
-
-            // 4. Main body (3 modes)
-            if (nurText) {
-                float fs = seg.text.length() > 160 ? 26f : 32f;
-                karaokeP.setTextSize(fs);
-                karaokeAktivP.setTextSize(fs);
-                storyLayout.bauen(seg.text, karaokeP, W - 120, fs * 1.38f);
-                mehrScrollY = zeichneKaraoke(c, storyLayout, seg.text, prog, status.karaoke, 60, 146, W - 120, 320, mehrScrollY);
-            } else if (mehr) {
-                Bitmap foto = scharfBilder.get(it.bild);
-                float tx = 30;
-                if (foto != null && !foto.isRecycled()) {
-                    zeichneBildGerundet(c, foto, 30, 100, 170, 96, 14);
-                    tx = 218;
-                }
-                zeichneQuellenZeile(c, it, tx, 102, nowMs);
-                // 2-line headline above body
-                mittelP.setTextSize(19);
-                mittelP.setColor(0xFFECEBE8);
-                zeichneMehrzeilig(c, it.t, mittelP, tx, 148, W - 30 - tx, 26, 2);
-
-                // Karaoke body text
-                float fs = 23f;
-                karaokeP.setTextSize(fs);
-                karaokeAktivP.setTextSize(fs);
-                storyLayout.bauen(seg.text, karaokeP, W - 90, fs * 1.44f);
-                mehrScrollY = zeichneKaraoke(c, storyLayout, seg.text, prog, status.karaoke, 30, 222, W - 90, 246, mehrScrollY);
-            } else {
-                // Headline view: big article photo left + karaoke headline right
-                Bitmap foto = scharfBilder.get(it.bild);
-                boolean mitFoto = foto != null && !foto.isRecycled();
-                boolean hatBildUrl = !it.bild.isEmpty();
-                if (mitFoto) {
-                    p.setColor(0x50000000);
-                    c.drawRoundRect(30, 112, 440, 343, 22, 22, p);
-                    zeichneBildGerundet(c, foto, 30, 104, 410, 231, 22);
-                } else if (hatBildUrl) {
-                    // Clean glass placeholder while thumbnail downloads
-                    rf.set(30, 104, 440, 335);
-                    p.setColor(0x18FFFFFF);
-                    c.drawRoundRect(rf, 22, 22, p);
-                    drawIcon(c, "mdi:newspaper-variant-outline", 215, 200, 40, 0x44FFFFFF);
-                }
-                boolean linksBox = mitFoto || hatBildUrl;
-                zeichneQuellenZeile(c, it, 30, linksBox ? 350 : 108, nowMs);
-
-                float rx = linksBox ? 468 : 30;
-                float ry = linksBox ? 106 : 148;
-                float rw = W - 34 - rx;
-                boldP.setColor("eil".equals(status.art) ? 0xFFFF8A80 : 0xFF9AD0FF);
-                c.drawText("eil".equals(status.art) ? "EILMELDUNG" : "SCHLAGZEILE", rx, ry + 12, boldP);
-
-                float fs = seg.text.length() > 140 ? 22f : (seg.text.length() > 95 ? 25.5f : 29.5f);
-                karaokeP.setTextSize(fs);
-                karaokeAktivP.setTextSize(fs);
-                storyLayout.bauen(seg.text, karaokeP, rw, fs * 1.32f);
-                mehrScrollY = zeichneKaraoke(c, storyLayout, seg.text, prog, status.karaoke, rx, ry + 26, rw, 330, mehrScrollY);
-            }
-
-            // 5. Bottom dock: Orb + speaker/waveform + transport controls + "Mehr dazu" + "Als Nächstes"
-            float dyC = H - 54;
-            zeichneOrb(c, 60, dyC, 30, "morgen".equals(status.art), animS, status.pause);
-            String spName = status.sprecherName.isEmpty() ? "Wird vorgelesen" : status.sprecherName + " liest vor";
-            mittelP.setTextSize(15);
-            mittelP.setColor(0xFFECEBE8);
-            c.drawText(spName, 104, dyC - 8, mittelP);
-            zeichneWelle(c, 104, dyC + 14, 18, 26, animS, status.pause);
-
-            // Right-to-left layout of dock items so nothing ever overlaps
-            float curR = W - 30;
-            if (nach != null && !mehr) {
-                float cardW = 212, cardH = 54, cx = curR - cardW, cy = dyC - cardH * .5f;
-                rf.set(cx, cy, cx + cardW, cy + cardH);
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0x18FFFFFF);
-                c.drawRoundRect(rf, 14, 14, p);
-                hits.add(new Hit("naechste", cx, cy, cx + cardW, cy + cardH));
-
-                float nxTextX = cx + 10;
-                Bitmap nb = scharfBilder.get(nach.bild);
-                if (nb != null && !nb.isRecycled()) {
-                    zeichneBildGerundet(c, nb, cx + 8, cy + 9, 60, 36, 7);
-                    nxTextX = cx + 76;
-                }
-                kleinP.setTextSize(11);
-                kleinP.setColor(0x90FFFFFF);
-                c.drawText("Als Nächstes", nxTextX, cy + 22, kleinP);
-                mittelP.setTextSize(12.5f);
-                mittelP.setColor(0xFFECEBE8);
-                c.drawText(kuerzen(mittelP, nach.t, cx + cardW - nxTextX - 10), nxTextX, cy + 40, mittelP);
-                curR = cx - 14;
-            }
-
-            if (it != null && !mehr && !it.x.isEmpty()) {
-                float pw = 128, ph = 44, px = curR - pw, py = dyC - ph * .5f;
-                rf.set(px, py, px + pw, py + ph);
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0x22FFFFFF);
-                c.drawRoundRect(rf, 18, 18, p);
-                linie.setStrokeWidth(1f);
-                linie.setColor(0x26FFFFFF);
-                c.drawRoundRect(rf, 18, 18, linie);
-                drawIcon(c, "mdi:text-box-outline", px + 14, py + 13, 18, 0xFFECEBE8);
-                mittelP.setTextSize(14.5f);
-                mittelP.setColor(0xFFECEBE8);
-                c.drawText("Mehr dazu", px + 38, py + 27, mittelP);
-                hits.add(new Hit("mehr", px, py, px + pw, py + ph));
-                curR = px - 14;
-            }
-
-            // Skip-next, Play/Pause (white highlight), Skip-previous
-            float nextCx = curR - 25;
-            kreisKnopf(c, "naechste", nextCx, dyC, 25, false, "mdi:skip-next", 24);
-            float pauseCx = nextCx - 66;
-            kreisKnopf(c, "pause", pauseCx, dyC, 30, true, status.pause ? "mdi:play" : "mdi:pause", 28);
-            float prevCx = pauseCx - 66;
-            kreisKnopf(c, "zurueck_seg", prevCx, dyC, 25, false, "mdi:skip-previous", 24);
         }
 
-        private void zeichneQuellenZeile(Canvas c, MorgenDaten.Meldung it, float x, float y, long nowMs) {
-            String qn = status.quelleName(it.q);
-            int qc = status.quelleFarbe(it.q);
-            boldP.setTextSize(12);
-            float qw = boldP.measureText(qn) + 16;
-            rf.set(x, y, x + qw, y + 22);
+        private void zeichneKopfZeile(Canvas c, int dotCol, String titel, String sub, String zaehler) {
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTypeface(tfMed); txt.setTextSize(14.5f);
+            float tw = txt.measureText(titel);
+            String subTxt = sub.isEmpty() ? "" : ("  ·  " + sub);
+            txt.setTypeface(tfNorm); txt.setTextSize(13.5f);
+            float sw = txt.measureText(subTxt);
+            float pw = Math.min(720, 50 + tw + sw);
+
+            zeichneGlasKarte(c, 28, 42, pw, 34, 0xB20D141C, 0x24FFFFFF, 17);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(WetterLage.alpha(qc, .20f));
-            c.drawRoundRect(rf, 6, 6, p);
-            boldP.setColor(qc);
-            c.drawText(qn, x + 8, y + 15, boldP);
+            p.setColor(dotCol);
+            c.drawCircle(47, 59, 5, p);
 
-            String vor = MorgenDaten.vorText(it.z, nowMs);
-            if (!vor.isEmpty()) {
-                kleinP.setTextSize(13);
-                kleinP.setColor(0xB3FFFFFF);
-                c.drawText(vor, x + qw + 10, y + 15, kleinP);
+            txt.setTypeface(tfMed); txt.setTextSize(14.5f); txt.setColor(0xFFFFFFFF);
+            c.drawText(titel, 60, 64, txt);
+            if (!subTxt.isEmpty()) {
+                txt.setTypeface(tfNorm); txt.setTextSize(13.5f); txt.setColor(0xC4D2DEEB);
+                c.drawText(kuerzen(txt, subTxt, pw - 48 - tw), 60 + tw, 64, txt);
             }
+
+            txt.setTextAlign(Paint.Align.RIGHT);
+            txt.setTypeface(tfNorm); txt.setTextSize(13); txt.setColor(0xAADCE6F0);
+            c.drawText(zaehler, 882, 64, txt);
+            txt.setTextAlign(Paint.Align.LEFT);
+
+            // Close button (top right)
+            p.setStyle(Paint.Style.FILL); p.setColor(0x20FFFFFF);
+            c.drawCircle(914, 59, 18, p);
+            drawIcon(c, "mdi:close", 904, 49, 20, 0xE0FFFFFF);
+            hits.add(new Hit("stopp", 888, 34, 944, 86));
         }
 
-        private float aktiverFortschritt(long nowMs) {
-            if (status == null) return 0f;
-            if (status.pause) return pauseFortschritt;
-            float p = status.fortschritt(nowMs);
-            pauseFortschritt = p;
-            return p;
+        private void zeichneFussLeiste(Canvas c, String modeLabel, String nextLabel, boolean mitMehr, float animS) {
+            float y = 502;
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0x18FFFFFF);
+            c.drawRect(28, y - 14, W - 28, y - 13, p);
+
+            // Equalizer wave left
+            p.setColor(0xFF7AB8F5);
+            for (int k = 0; k < 5; k++) {
+                float ph = status.pause ? (k * 0.9f) : (animS * (3.2f + k * 0.45f) + k * 0.8f);
+                float bh = 8f + 13f * (float) (.5 + .5 * Math.sin(ph));
+                rf.set(32 + k * 6f, y + 22 - bh * .5f, 35.5f + k * 6f, y + 22 + bh * .5f);
+                c.drawRoundRect(rf, 2, 2, p);
+            }
+
+            txt.setTextAlign(Paint.Align.LEFT);
+            txt.setTypeface(tfMed); txt.setTextSize(13.5f); txt.setColor(0xFFEBF2F8);
+            c.drawText(kuerzen(txt, modeLabel, 250), 70, y + 20, txt);
+            txt.setTypeface(tfNorm); txt.setTextSize(12); txt.setColor(0xB8B4C4D4);
+            c.drawText(kuerzen(txt, nextLabel, 260), 70, y + 37, txt);
+
+            // Unified pill buttons right-to-left
+            float rx = 935;
+            rx = zeichneSteuerKnopf(c, "stopp", rx, y + 2, "Stopp", 0x2EE85C52, 0x6EF28078, 0xFFF5B5B0) - 10;
+            if (mitMehr) {
+                rx = zeichneSteuerKnopf(c, "mehr", rx, y + 2, "+ Mehr dazu", 0x2E6FB3F2, 0x786FB3F2, 0xFFB3D8FA) - 10;
+            }
+            rx = zeichneSteuerKnopf(c, "naechste", rx, y + 2, "Überspringen ›", 0x1AFFFFFF, 0x32FFFFFF, 0xFFFFFFFF) - 10;
+            rx = zeichneSteuerKnopf(c, "pause", rx, y + 2, status.pause ? "Weiter" : "Pause", 0xEBFFFFFF, 0xFFFFFFFF, 0xFF0D1720) - 10;
+            zeichneSteuerKnopf(c, "zurueck_seg", rx, y + 2, "‹ Zurück", 0x16FFFFFF, 0x2CFFFFFF, 0xFFDCE6F0);
         }
 
-        /** Draws pre-laid-out karaoke words with spoken/active/upcoming tint and gentle vertical auto-scroll. */
+        private float zeichneSteuerKnopf(Canvas c, String id, float rightX, float y, String label, int bg, int border, int fg) {
+            txt.setTypeface(tfMed); txt.setTextSize(14);
+            float w = txt.measureText(label) + 32;
+            float x = rightX - w;
+            zeichneGlasKarte(c, x, y, w, 40, bg, border, 20);
+            txt.setColor(fg);
+            c.drawText(label, x + 16, y + 25, txt);
+            hits.add(new Hit(id, x - 2, y - 6, x + w + 2, y + 46));
+            return x;
+        }
+
+        private void zeichneKaraokeBox(Canvas c, float x, float y, float w, float h, String text, float prog, float fs) {
+            zeichneGlasKarte(c, x, y, w, h, 0xC60C131C, 0x22FFFFFF, 18);
+            karP.setTypeface(tfNorm); karP.setTextSize(fs);
+            karActP.setTypeface(tfMed); karActP.setTextSize(fs);
+            karLayout.bauen(text, karP, w - 44, fs * 1.48f);
+            karScrollY = zeichneKaraoke(c, karLayout, text, prog, status.karaoke, x + 22, y + 14, w - 44, h - 24, karScrollY);
+        }
+
         private float zeichneKaraoke(Canvas c, WortLayout layout, String text, float prog, boolean karaoke,
                                      float x, float y, float w, float h, float scrollY) {
             if (layout.woerter.isEmpty()) return 0;
             float curChar = prog * (text == null ? 0 : text.length());
-            int aktivIdx = -1;
-            int aktiveZeile = 0;
+            int aktivIdx = -1, aktiveZeile = 0;
             if (karaoke && prog > 0 && prog < 0.995f) {
                 for (int i = 0; i < layout.woerter.size(); i++) {
                     Wort wo = layout.woerter.get(i);
-                    if (wo.start <= curChar) {
-                        aktivIdx = i;
-                        aktiveZeile = wo.zeile;
-                    } else break;
+                    if (wo.start <= curChar) { aktivIdx = i; aktiveZeile = wo.zeile; } else break;
                 }
             } else if (karaoke && prog >= 0.995f) {
                 aktiveZeile = Math.max(0, layout.zeilen - 1);
             }
-            float totalH = layout.zeilen * layout.zeilenHoehe;
-            float maxScroll = Math.max(0, totalH - h);
-            float zielScroll = 0;
-            if (maxScroll > 0) {
-                float activeY = aktiveZeile * layout.zeilenHoehe;
-                zielScroll = Math.max(0, Math.min(maxScroll, activeY - h * .38f));
-            }
+            float maxScroll = Math.max(0, layout.zeilen * layout.zeilenHoehe - h);
+            float zielScroll = maxScroll > 0 ? Math.max(0, Math.min(maxScroll, aktiveZeile * layout.zeilenHoehe - h * .38f)) : 0;
             float neuScroll = scrollY + (zielScroll - scrollY) * .22f;
             if (Math.abs(zielScroll - neuScroll) < .5f) neuScroll = zielScroll;
 
             c.save();
-            c.clipRect(x - 4, y - 4, x + w + 4, y + h + 4);
-            float baseAscent = -karaokeP.ascent();
+            c.clipRect(x - 6, y - 4, x + w + 6, y + h + 4);
+            float baseAscent = -karP.ascent();
             for (int i = 0; i < layout.woerter.size(); i++) {
                 Wort wo = layout.woerter.get(i);
                 float wy = y + wo.y - neuScroll + baseAscent;
                 if (wy < y - layout.zeilenHoehe || wy > y + h + layout.zeilenHoehe) continue;
                 if (!karaoke) {
-                    karaokeP.setColor(0xEBFFFFFF);
-                    c.drawText(wo.text, x + wo.x, wy, karaokeP);
+                    karP.setColor(0xEEFFFFFF);
+                    c.drawText(wo.text, x + wo.x, wy, karP);
                 } else if (i == aktivIdx) {
-                    // Subtle luminous pill behind the spoken word (zero GPU blur cost)
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(0x1EFFFFFF);
-                    rf.set(x + wo.x - 3, y + wo.y - neuScroll, x + wo.x + wo.breite + 3, y + wo.y - neuScroll + layout.zeilenHoehe - 2);
+                    float aw = karActP.measureText(wo.text);
+                    p.setStyle(Paint.Style.FILL); p.setColor(0x306FB3F2);
+                    rf.set(x + wo.x - 4, y + wo.y - neuScroll, x + wo.x + aw + 4, y + wo.y - neuScroll + layout.zeilenHoehe - 3);
                     c.drawRoundRect(rf, 6, 6, p);
-                    karaokeAktivP.setColor(0xFFFFFFFF);
-                    c.drawText(wo.text, x + wo.x, wy, karaokeAktivP);
+                    karActP.setColor(0xFF9ED0FF);
+                    c.drawText(wo.text, x + wo.x, wy, karActP);
                 } else if (wo.ende <= curChar) {
-                    karaokeP.setColor(0xDEFFFFFF);
-                    c.drawText(wo.text, x + wo.x, wy, karaokeP);
+                    karP.setColor(0xF0FFFFFF);
+                    c.drawText(wo.text, x + wo.x, wy, karP);
                 } else {
-                    karaokeP.setColor(0x5CFFFFFF);
-                    c.drawText(wo.text, x + wo.x, wy, karaokeP);
+                    karP.setColor(0x6CFFFFFF);
+                    c.drawText(wo.text, x + wo.x, wy, karP);
                 }
             }
             c.restore();
             return neuScroll;
         }
 
-        // ==== decorative & interactive primitives ===================================================================
+        private void zeichneStundenGraphKompakt(Canvas c, float x, float y, float w, float h) {
+            List<MorgenDaten.Stunde> hs = heute.stunden;
+            if (hs == null || hs.isEmpty()) {
+                txt.setTypeface(tfNorm); txt.setTextSize(14); txt.setColor(0xFF9FB0C4);
+                c.drawText("Stundenvorhersage wird geladen …", x, y + 36, txt);
+                return;
+            }
+            int n = Math.min(8, hs.size());
+            float colW = w / n;
+            int gmin = 99, gmax = -99;
+            for (int i = 0; i < n; i++) {
+                MorgenDaten.Stunde st = hs.get(i);
+                if (st.temp < gmin) gmin = st.temp;
+                if (st.temp > gmax) gmax = st.temp;
+            }
+            float span = Math.max(4f, gmax - gmin);
+            float[] px = new float[n], py = new float[n];
+            int[] cols = new int[n];
+            float[] stops = new float[n];
+            for (int i = 0; i < n; i++) {
+                MorgenDaten.Stunde st = hs.get(i);
+                px[i] = x + (i + .5f) * colW;
+                py[i] = y + 84 - (st.temp - gmin) / span * 42f;
+                cols[i] = MorgenDaten.tempFarbe(st.temp);
+                stops[i] = n > 1 ? i / (float) (n - 1) : 0f;
+            }
 
-        private void zeichneOrb(Canvas c, float cx, float cy, float r, boolean warm, float t, boolean paused) {
-            float puls = paused ? 1f : (.95f + .055f * (float) Math.sin(t * 2.1));
-            c.save();
-            c.translate(cx, cy);
-            c.scale(puls, puls);
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            p.setShader(warm ? orbGlowWarm : orbGlowKalt);
-            c.drawCircle(0, 0, r * 1.55f, p);
-            p.setShader(warm ? orbWarm : orbKalt);
-            c.drawCircle(0, 0, r, p);
-            p.setShader(null);
-            c.restore();
+            // Rain bars at bottom
+            txt.setTextAlign(Paint.Align.CENTER);
+            for (int i = 0; i < n; i++) {
+                MorgenDaten.Stunde st = hs.get(i);
+                int pct = st.regenPct != null ? st.regenPct : (MorgenDaten.istNass(st) ? 70 : 0);
+                if (pct >= 35) {
+                    float bh = Math.max(8f, (pct / 100f) * 34f);
+                    float by = y + h - 22 - bh;
+                    p.setStyle(Paint.Style.FILL); p.setColor(0xFFFFFFFF); p.setShader(regenShader);
+                    c.save(); c.translate(0, by);
+                    rf.set(px[i] - 12, 0, px[i] + 12, bh);
+                    c.drawRoundRect(rf, 6, 6, p);
+                    c.restore(); p.setShader(null);
+                    txt.setTypeface(tfMed); txt.setTextSize(10.5f); txt.setColor(0xFF8CC8FF);
+                    c.drawText(pct + "%", px[i], by - 4, txt);
+                }
+            }
+
+            // Smooth temperature curve
+            if (n >= 2) {
+                kurvePath.reset();
+                kurvePath.moveTo(px[0], py[0]);
+                for (int i = 0; i < n - 1; i++) {
+                    float mx = (px[i] + px[i + 1]) * .5f;
+                    kurvePath.cubicTo(mx, py[i], mx, py[i + 1], px[i + 1], py[i + 1]);
+                }
+                String kKey = Math.round(px[0]) + "|" + Math.round(px[n - 1]) + "|" + cols[0] + "|" + cols[n - 1];
+                if (kurveShader == null || !kKey.equals(kurveKey)) {
+                    kurveKey = kKey;
+                    kurveShader = new LinearGradient(px[0], 0, px[n - 1], 0, cols, stops, Shader.TileMode.CLAMP);
+                }
+                linie.setColor(0xFFFFFFFF); linie.setStrokeWidth(3f);
+                linie.setShader(kurveShader != null ? kurveShader : kurveFallback);
+                c.drawPath(kurvePath, linie);
+                linie.setShader(null);
+            }
+
+            for (int i = 0; i < n; i++) {
+                MorgenDaten.Stunde st = hs.get(i);
+                txt.setTypeface(tfMed); txt.setTextSize(13.5f); txt.setColor(0xFFFFFFFF);
+                c.drawText(st.temp + "°", px[i], py[i] - 11, txt);
+                p.setStyle(Paint.Style.FILL); p.setColor(0xFFFFFFFF);
+                c.drawCircle(px[i], py[i], 3.2f, p);
+                txt.setTypeface(tfNorm); txt.setTextSize(12); txt.setColor(0xC4CDDAE8);
+                c.drawText(st.stunde + " Uhr", px[i], y + h - 4, txt);
+            }
+            txt.setTextAlign(Paint.Align.LEFT);
         }
 
-        private void zeichneWelle(Canvas c, float x, float cy, int n, float maxH, float t, boolean paused) {
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            c.save();
-            c.translate(0, cy);
-            p.setShader(welleShader);
-            for (int k = 0; k < n; k++) {
-                float ph = paused ? (k * 0.7f) : (t * (2.6f + ((k * 37) % 17) * 0.14f) + k * 0.65f);
-                float h = maxH * (.24f + .76f * (float) (.5 + .5 * Math.sin(ph)));
-                float bx = x + k * 7f;
-                rf.set(bx, -h * .5f, bx + 4f, h * .5f);
-                c.drawRoundRect(rf, 2, 2, p);
-            }
-            p.setShader(null);
-            c.restore();
+        private void zeichneHinweisPill(Canvas c, float x, float y, String text, int bg, int border, int fg, boolean filledDot) {
+            txt.setTypeface(tfMed); txt.setTextSize(13.5f);
+            float maxW = 392;
+            String s = kuerzen(txt, text, maxW - 42);
+            float w = txt.measureText(s) + 42;
+            zeichneGlasKarte(c, x, y, w, 32, bg, border, 16);
+            if (filledDot) { p.setStyle(Paint.Style.FILL); p.setColor(fg); c.drawCircle(x + 18, y + 16, 4.5f, p); }
+            else { linie.setStrokeWidth(1.6f); linie.setColor(fg); c.drawCircle(x + 18, y + 16, 4.5f, linie); }
+            txt.setColor(fg);
+            c.drawText(s, x + 30, y + 21, txt);
         }
 
-        private void kreisKnopf(Canvas c, String id, float cx, float cy, float rad, boolean hell, String icon, float icSize) {
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(hell ? 0xFFFFFFFF : 0x22FFFFFF);
-            c.drawCircle(cx, cy, rad, p);
-            if (!hell) {
-                linie.setStrokeWidth(1f);
-                linie.setColor(0x1EFFFFFF);
-                c.drawCircle(cx, cy, rad, linie);
+        private void zeichneGlasKarte(Canvas c, float x, float y, float w, float h, int bg, int border, float r) {
+            rf.set(x, y, x + w, y + h);
+            p.setStyle(Paint.Style.FILL); p.setColor(bg);
+            c.drawRoundRect(rf, r, r, p);
+            if ((border >>> 24) > 0) {
+                linie.setStrokeWidth(1f); linie.setColor(border);
+                c.drawRoundRect(rf, r, r, linie);
             }
-            drawIcon(c, icon, cx - icSize * .5f, cy - icSize * .5f, icSize, hell ? 0xFF11161E : 0xFFECEBE8);
-            float pad = Math.max(rad, 28f);   // generous touch target
-            hits.add(new Hit(id, cx - pad, cy - pad, cx + pad, cy + pad));
         }
 
         private void zeichneBildGerundet(Canvas c, Bitmap bm, float x, float y, float w, float h, float rad) {
             int bw = bm.getWidth(), bh = bm.getHeight();
             if (bw <= 0 || bh <= 0) return;
-            float targetRatio = w / h, bmRatio = bw / (float) bh;
+            float tr = w / h, br = bw / (float) bh;
             int sx = 0, sy = 0, sw = bw, sh = bh;
-            if (bmRatio > targetRatio) {
-                sw = Math.round(bh * targetRatio);
-                sx = (bw - sw) / 2;
-            } else {
-                sh = Math.round(bw / targetRatio);
-                sy = (bh - sh) / 2;
-            }
+            if (br > tr) { sw = Math.round(bh * tr); sx = (bw - sw) / 2; }
+            else { sh = Math.round(bw / tr); sy = (bh - sh) / 2; }
             srcR.set(sx, sy, sx + sw, sy + sh);
             rf.set(x, y, x + w, y + h);
-            clipPath.reset();
-            clipPath.addRoundRect(rf, rad, rad, Path.Direction.CW);
-            c.save();
-            c.clipPath(clipPath);
-            c.drawBitmap(bm, srcR, rf, bildP);
-            c.restore();
-            linie.setStrokeWidth(1f);
-            linie.setColor(0x22FFFFFF);
+            clipPath.reset(); clipPath.addRoundRect(rf, rad, rad, Path.Direction.CW);
+            c.save(); c.clipPath(clipPath); c.drawBitmap(bm, srcR, rf, bildP); c.restore();
+            linie.setStrokeWidth(1f); linie.setColor(0x28FFFFFF);
             c.drawRoundRect(rf, rad, rad, linie);
         }
 
-        private void schattenText(Canvas c, String s, float x, float y, Paint pt) {
-            int orig = pt.getColor();
-            pt.setColor(0x70000000);
-            c.drawText(s, x, y + 2, pt);
-            pt.setColor(orig);
-            c.drawText(s, x, y, pt);
-        }
-
-        private void zeichneMehrzeilig(Canvas c, String s, Paint pt, float x, float y, float maxW, float lh, int maxZ) {
-            if (s == null || s.isEmpty()) return;
+        private float zeichneMehrzeilig(Canvas c, String s, Paint pt, float x, float y, float maxW, float lh, int maxZ) {
+            if (s == null || s.isEmpty()) return y;
             String rest = s.trim();
+            float lastY = y;
             for (int z = 0; z < maxZ && !rest.isEmpty(); z++) {
+                lastY = y + z * lh;
                 if (z == maxZ - 1 || pt.measureText(rest) <= maxW) {
-                    c.drawText(kuerzen(pt, rest, maxW), x, y + z * lh, pt);
-                    return;
+                    c.drawText(kuerzen(pt, rest, maxW), x, lastY, pt);
+                    return lastY;
                 }
                 int cut = rest.length();
                 while (cut > 0 && pt.measureText(rest.substring(0, cut)) > maxW) cut--;
                 int sp = rest.lastIndexOf(' ', cut);
                 if (sp > 4) cut = sp;
-                c.drawText(rest.substring(0, cut).trim(), x, y + z * lh, pt);
+                c.drawText(rest.substring(0, cut).trim(), x, lastY, pt);
                 rest = rest.substring(cut).trim();
             }
+            return lastY;
         }
 
-        // ---- crisp vector icons (KsTheme.iconPath first, custom vector fallback) -----------------------------------
+        private float aktiverFortschritt(long nowMs) {
+            if (status == null) return 0f;
+            if (status.pause) return pauseFortschritt;
+            float pr = status.fortschritt(nowMs);
+            pauseFortschritt = pr;
+            return pr;
+        }
 
         private void drawIcon(Canvas c, String name, float x, float y, float size, int color) {
             Path path = iconPath(name);
             if (path != null) {
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(color);
-                c.save();
-                c.translate(x, y);
-                c.scale(size / 24f, size / 24f);
-                c.drawPath(path, p);
-                c.restore();
+                p.setStyle(Paint.Style.FILL); p.setColor(color);
+                c.save(); c.translate(x, y); c.scale(size / 24f, size / 24f);
+                c.drawPath(path, p); c.restore();
                 return;
             }
-            drawFallbackIcon(c, name, x, y, size, color);
+            c.save(); c.translate(x, y); c.scale(size / 24f, size / 24f);
+            linie.setColor(color); linie.setStrokeWidth(2.1f);
+            iconTmp.reset();
+            if ("mdi:close".equals(name)) {
+                c.drawLine(6.5f, 6.5f, 17.5f, 17.5f, linie);
+                c.drawLine(17.5f, 6.5f, 6.5f, 17.5f, linie);
+            } else if ("mdi:chevron-left".equals(name)) {
+                iconTmp.moveTo(15, 6); iconTmp.lineTo(9, 12); iconTmp.lineTo(15, 18);
+                c.drawPath(iconTmp, linie);
+            } else if ("mdi:trash-can-outline".equals(name)) {
+                linie.setStrokeWidth(1.8f);
+                c.drawLine(5, 6.5f, 19, 6.5f, linie);
+                c.drawRoundRect(7, 6.5f, 17, 20, 2, 2, linie);
+                c.drawLine(10, 4, 14, 4, linie);
+            } else {
+                linie.setStrokeWidth(1.8f);
+                c.drawRoundRect(4, 5, 20, 19, 2.5f, 2.5f, linie);
+                c.drawLine(7.5f, 9.5f, 16.5f, 9.5f, linie);
+                c.drawLine(7.5f, 13.5f, 14, 13.5f, linie);
+            }
+            c.restore();
         }
 
         private Path iconPath(String name) {
@@ -1173,205 +1081,15 @@ final class MorgenView extends FrameLayout {
             return found;
         }
 
-        private void drawFallbackIcon(Canvas c, String name, float x, float y, float s, int col) {
-            c.save();
-            c.translate(x, y);
-            c.scale(s / 24f, s / 24f);
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(col);
-            linie.setColor(col);
-            linie.setStrokeWidth(2.2f);
-            iconTmp.reset();
-            switch (name) {
-                case "mdi:chevron-left":
-                    iconTmp.moveTo(15, 6); iconTmp.lineTo(9, 12); iconTmp.lineTo(15, 18);
-                    c.drawPath(iconTmp, linie);
-                    break;
-                case "mdi:chevron-down":
-                    iconTmp.moveTo(6, 9); iconTmp.lineTo(12, 15); iconTmp.lineTo(18, 9);
-                    c.drawPath(iconTmp, linie);
-                    break;
-                case "mdi:close":
-                    c.drawLine(6.5f, 6.5f, 17.5f, 17.5f, linie);
-                    c.drawLine(17.5f, 6.5f, 6.5f, 17.5f, linie);
-                    break;
-                case "mdi:play":
-                    iconTmp.moveTo(8, 5.5f); iconTmp.lineTo(19, 12); iconTmp.lineTo(8, 18.5f); iconTmp.close();
-                    c.drawPath(iconTmp, p);
-                    break;
-                case "mdi:pause":
-                    c.drawRoundRect(6.5f, 5.5f, 10.3f, 18.5f, 1.2f, 1.2f, p);
-                    c.drawRoundRect(13.7f, 5.5f, 17.5f, 18.5f, 1.2f, 1.2f, p);
-                    break;
-                case "mdi:skip-next":
-                    iconTmp.moveTo(6, 6); iconTmp.lineTo(14.5f, 12); iconTmp.lineTo(6, 18); iconTmp.close();
-                    c.drawPath(iconTmp, p);
-                    c.drawRoundRect(16, 6, 18.5f, 18, 1, 1, p);
-                    break;
-                case "mdi:skip-previous":
-                    iconTmp.moveTo(18, 6); iconTmp.lineTo(9.5f, 12); iconTmp.lineTo(18, 18); iconTmp.close();
-                    c.drawPath(iconTmp, p);
-                    c.drawRoundRect(5.5f, 6, 8, 18, 1, 1, p);
-                    break;
-                case "mdi:umbrella":
-                    iconTmp.moveTo(3, 13); iconTmp.cubicTo(4, 5, 20, 5, 21, 13); iconTmp.close();
-                    c.drawPath(iconTmp, p);
-                    c.drawLine(12, 13, 12, 19, linie);
-                    c.drawLine(12, 19, 9.5f, 19, linie);
-                    break;
-                case "mdi:calendar-today":
-                    linie.setStrokeWidth(1.8f);
-                    c.drawRoundRect(4, 5, 20, 20, 2.5f, 2.5f, linie);
-                    c.drawLine(4, 9.5f, 20, 9.5f, linie);
-                    c.drawLine(8, 3, 8, 6.5f, linie);
-                    c.drawLine(16, 3, 16, 6.5f, linie);
-                    break;
-                case "mdi:trash-can-outline":
-                    linie.setStrokeWidth(1.8f);
-                    c.drawLine(5, 6.5f, 19, 6.5f, linie);
-                    c.drawRoundRect(7, 6.5f, 17, 20, 2, 2, linie);
-                    c.drawLine(10, 4, 14, 4, linie);
-                    break;
-                case "mdi:cart-outline":
-                    linie.setStrokeWidth(1.8f);
-                    iconTmp.moveTo(3, 5); iconTmp.lineTo(6, 5); iconTmp.lineTo(8.5f, 15); iconTmp.lineTo(18.5f, 15); iconTmp.lineTo(20.5f, 8); iconTmp.lineTo(7, 8);
-                    c.drawPath(iconTmp, linie);
-                    c.drawCircle(9.5f, 18.5f, 1.6f, p);
-                    c.drawCircle(17.5f, 18.5f, 1.6f, p);
-                    break;
-                default:
-                    linie.setStrokeWidth(1.8f);
-                    c.drawRoundRect(4, 5, 20, 19, 2.5f, 2.5f, linie);
-                    c.drawLine(7.5f, 9.5f, 16.5f, 9.5f, linie);
-                    c.drawLine(7.5f, 13.5f, 14, 13.5f, linie);
-                    break;
-            }
-            c.restore();
-        }
-
-        /** Colourful miniature weather icons for the 8-hour strip (matches wetter.js wIcon). */
-        private void zeichneWetterIcon(Canvas c, String cond, boolean nacht, float x, float y, float sz) {
-            c.save();
-            c.translate(x, y);
-            c.scale(sz / 32f, sz / 32f);
-            p.setStyle(Paint.Style.FILL);
-            if ("sunny".equals(cond) || "clear-night".equals(cond)) {
-                if (nacht || "clear-night".equals(cond)) drawMoon(c, 16, 16, 8.5f);
-                else drawSun(c, 16, 16, 6.8f);
-            } else if ("partlycloudy".equals(cond)) {
-                if (nacht) drawMoon(c, 11, 11, 6.2f);
-                else drawSun(c, 11.5f, 11, 5.2f);
-                drawCloud(c, 0, 0, 1f, 0xFFEAF0F7);
-            } else if ("cloudy".equals(cond) || "fog".equals(cond)) {
-                drawCloud(c, 5, -4, .75f, 0xB3BAC7D6);
-                drawCloud(c, 0, 0, 1f, 0xFFEAF0F7);
-                if ("fog".equals(cond)) {
-                    linie.setStrokeWidth(2.1f); linie.setColor(0xFFC9D3DC);
-                    c.drawLine(7, 27, 25, 27, linie);
-                    c.drawLine(10, 30.5f, 22, 30.5f, linie);
-                }
-            } else if ("pouring".equals(cond)) {
-                drawCloud(c, 0, 0, 1f, 0xFFB8C5D4);
-                drawRainLines(c, 4, 0xFF4FA0FF);
-            } else if ("snowy".equals(cond)) {
-                drawCloud(c, 0, 0, 1f, 0xFFEAF0F7);
-                p.setColor(0xFFEEF4FB);
-                c.drawCircle(11, 27.5f, 1.8f, p); c.drawCircle(17.5f, 29.5f, 1.8f, p); c.drawCircle(24, 27.5f, 1.8f, p);
-            } else if ("snowy-rainy".equals(cond)) {
-                drawCloud(c, 0, 0, 1f, 0xFFEAF0F7);
-                drawRainLines(c, 2, 0xFF4FA0FF);
-                p.setColor(0xFFEEF4FB); c.drawCircle(17.5f, 29, 1.8f, p);
-            } else if ("hail".equals(cond)) {
-                drawCloud(c, 0, 0, 1f, 0xFFB8C5D4);
-                p.setColor(0xFFE8F1FA);
-                c.drawCircle(11, 28, 2.1f, p); c.drawCircle(17, 30, 2.1f, p); c.drawCircle(23, 28, 2.1f, p);
-            } else if ("lightning".equals(cond) || "lightning-rainy".equals(cond)) {
-                drawCloud(c, 0, 0, 1f, 0xFFB8C5D4);
-                iconTmp.reset();
-                iconTmp.moveTo(17.5f, 21); iconTmp.lineTo(13.5f, 27); iconTmp.lineTo(16.7f, 27);
-                iconTmp.lineTo(14.7f, 32); iconTmp.lineTo(20.2f, 25); iconTmp.lineTo(16.9f, 25); iconTmp.close();
-                p.setColor(0xFFFFD34D);
-                c.drawPath(iconTmp, p);
-                if ("lightning-rainy".equals(cond)) {
-                    linie.setStrokeWidth(2.1f); linie.setColor(0xFF4FA0FF);
-                    c.drawLine(11.6f, 26.5f, 9.4f, 30.5f, linie);
-                    c.drawLine(25.6f, 26.5f, 23.4f, 30.5f, linie);
-                }
-            } else if ("windy".equals(cond) || "windy-variant".equals(cond)) {
-                if ("windy-variant".equals(cond)) drawCloud(c, 0, -2, .9f, 0xCCEAF0F7);
-                linie.setStrokeWidth(2.2f); linie.setColor(0xFFDFE8F2);
-                c.drawLine(4, 13, 19, 13, linie);
-                c.drawLine(4, 18.5f, 24, 18.5f, linie);
-                c.drawLine(4, 24, 15, 24, linie);
-            } else {
-                drawCloud(c, 0, 0, 1f, 0xFFEAF0F7);
-                drawRainLines(c, 3, 0xFF4FA0FF);
-            }
-            c.restore();
-        }
-
-        private void drawSun(Canvas c, float cx, float cy, float r) {
-            p.setColor(0xFFFFC93C);
-            c.drawCircle(cx, cy, r, p);
-            linie.setStrokeWidth(2f); linie.setColor(0xFFFFC93C);
-            for (int a = 0; a < 360; a += 45) {
-                double rad = a * Math.PI / 180.0;
-                float co = (float) Math.cos(rad), si = (float) Math.sin(rad);
-                c.drawLine(cx + co * (r + 1.8f), cy + si * (r + 1.8f), cx + co * (r + 4.2f), cy + si * (r + 4.2f), linie);
-            }
-        }
-
-        private void drawMoon(Canvas c, float cx, float cy, float r) {
-            p.setColor(0xFFF3E7B0);
-            c.drawCircle(cx, cy, r, p);
-            p.setColor(0xFF141F2F);
-            c.drawCircle(cx + r * .44f, cy - r * .24f, r * .82f, p);
-        }
-
-        private void drawCloud(Canvas c, float ox, float oy, float s, int col) {
-            c.save();
-            c.translate(ox, oy);
-            c.scale(s, s);
-            p.setColor(col);
-            c.drawCircle(10.5f, 18.2f, 5.3f, p);
-            c.drawCircle(16.2f, 15.2f, 6.8f, p);
-            c.drawCircle(23.5f, 17.8f, 5.6f, p);
-            c.drawRect(10.5f, 18.2f, 23.5f, 23.5f, p);
-            c.restore();
-        }
-
-        private void drawRainLines(Canvas c, int n, int col) {
-            linie.setStrokeWidth(2.2f); linie.setColor(col);
-            for (int i = 0; i < n; i++) {
-                float lx = 11 + i * (13f / Math.max(1, n - 1));
-                c.drawLine(lx + 1.4f, 26.5f, lx - .6f, 30.5f, linie);
-            }
-        }
-
-        private void drawDrop(Canvas c, float cx, float y, float h, int col) {
-            iconTmp.reset();
-            float r = h * .34f;
-            iconTmp.moveTo(cx, y);
-            iconTmp.cubicTo(cx - r * 1.4f, y + h * .55f, cx - r, y + h, cx, y + h);
-            iconTmp.cubicTo(cx + r, y + h, cx + r * 1.4f, y + h * .55f, cx, y);
-            iconTmp.close();
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(col);
-            c.drawPath(iconTmp, p);
-        }
-
-        // ---- touch handling ----------------------------------------------------------------------------------------
+        // ---- Touch Handling ----------------------------------------------------------------------------------------
 
         @Override public boolean onTouchEvent(MotionEvent e) {
             try {
                 int a = e.getActionMasked();
                 if (a == MotionEvent.ACTION_DOWN) {
-                    downX = e.getX();
-                    downY = e.getY();
-                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) < 28) {
-                    float vx = (e.getX() - dx) / skala;
-                    float vy = (e.getY() - dy) / skala;
-                    // Walk in reverse so topmost interactive button wins
+                    downX = e.getX(); downY = e.getY();
+                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) < 34) {
+                    float vx = (e.getX() - dx) / skala, vy = (e.getY() - dy) / skala;
                     for (int i = hits.size() - 1; i >= 0; i--) {
                         Hit h = hits.get(i);
                         if (h.trifft(vx, vy)) {
@@ -1385,78 +1103,50 @@ final class MorgenView extends FrameLayout {
             return true;
         }
 
-        @Override public boolean performClick() { return super.performClick(); }
-
         private void ausfuehren(String id) {
             switch (id) {
-                case "zurueck":
-                    aktionen.zurueck();
-                    break;
-                case "klein":
-                    mini = true;
-                    abgleichSichtbarkeit();
-                    invalidate();
-                    break;
-                case "gross":
-                    mini = false;
-                    abgleichSichtbarkeit();
-                    invalidate();
-                    break;
-                case "pause":
-                    if (status != null && status.demo) {
-                        status.pause = !status.pause;
-                        if (status.pause) pauseFortschritt = status.fortschritt(System.currentTimeMillis());
-                        else if (status.seg != null) status.seg.t0 = System.currentTimeMillis() / 1000.0 - pauseFortschritt * status.seg.dauer;
-                        schleife();
-                        invalidate();
-                    } else {
-                        aktionen.steuern(status != null && status.pause ? "weiter" : "pause");
-                    }
-                    break;
+                case "zurueck": aktionen.zurueck(); break;
                 case "stopp":
                     if (status != null && status.demo) aktionen.zurueck();
-                    else {
-                        aktionen.steuern("stopp");
-                        aktionen.zurueck();
-                    }
+                    else { aktionen.steuern("stopp"); aktionen.zurueck(); }
+                    break;
+                case "pause":
+                    if (status != null && status.demo) { status.pause = !status.pause; invalidate(); }
+                    else aktionen.steuern(status != null && status.pause ? "weiter" : "pause");
                     break;
                 case "naechste":
+                    if (status != null && status.demo) {
+                        String cur = status.seg != null ? status.seg.art : "wetter";
+                        String nxt = "meldung".equals(cur) ? "kalender" : ("kalender".equals(cur) ? "wetter" : "meldung");
+                        setNews(MorgenDaten.demoArt(nxt, System.currentTimeMillis()));
+                        abgleichSichtbarkeit();
+                    } else aktionen.steuern("naechste");
+                    break;
                 case "zurueck_seg":
+                    if (status != null && status.demo) {
+                        String cur = status.seg != null ? status.seg.art : "wetter";
+                        String prv = "wetter".equals(cur) ? "kalender" : ("kalender".equals(cur) ? "meldung" : "wetter");
+                        setNews(MorgenDaten.demoArt(prv, System.currentTimeMillis()));
+                        abgleichSichtbarkeit();
+                    } else aktionen.steuern("zurueck");
+                    break;
                 case "mehr":
                     if (status != null && status.demo) {
-                        demoWeiter(id);
-                    } else {
-                        aktionen.steuern("zurueck_seg".equals(id) ? "zurueck" : id);
-                    }
+                        setNews(MorgenDaten.demoArt("mehr", System.currentTimeMillis()));
+                        abgleichSichtbarkeit();
+                    } else aktionen.steuern("mehr");
                     break;
-                default:
-                    if ("zurueck".equals(id)) aktionen.zurueck();
-                    break;
+                case "klein": mini = true; abgleichSichtbarkeit(); invalidate(); break;
+                case "gross": mini = false; abgleichSichtbarkeit(); invalidate(); break;
+                default: break;
             }
         }
 
-        private void demoWeiter(String id) {
-            long now = System.currentTimeMillis();
-            if ("mehr".equals(id)) {
-                setNews(MorgenDaten.demo(true, true, now));
-            } else if ("naechste".equals(id)) {
-                boolean warStory = istStoryVollbild();
-                setNews(MorgenDaten.demo(!warStory, false, now));
-            } else {
-                setNews(MorgenDaten.demo(false, false, now));
-            }
-            abgleichSichtbarkeit();
+        private String kuerzen(Paint pt, String s, float maxW) {
+            if (s == null || pt.measureText(s) <= maxW) return s == null ? "" : s;
+            int n = s.length();
+            while (n > 1 && pt.measureText(s.substring(0, n) + "…") > maxW) n--;
+            return s.substring(0, n) + "…";
         }
-    }
-
-    private static String kuerzen(Paint pt, String s, float maxW) {
-        if (s == null || s.isEmpty() || pt.measureText(s) <= maxW) return s == null ? "" : s;
-        int lo = 0, hi = s.length();
-        while (lo < hi) {
-            int mid = (lo + hi + 1) / 2;
-            if (pt.measureText(s.substring(0, mid) + "…") <= maxW) lo = mid;
-            else hi = mid - 1;
-        }
-        return lo <= 0 ? "…" : s.substring(0, lo) + "…";
     }
 }

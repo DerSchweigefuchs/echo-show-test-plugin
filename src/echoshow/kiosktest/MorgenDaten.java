@@ -9,8 +9,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Data models and parsers for the native "Mein Tag" and news reading view:
- * - echo_show/news/subscribe live status (briefing chips, active karaoke segment, queue, sources)
+ * Data models and parsers for the unified native "Mein Tag" v2 and news story player:
+ * - echo_show/news/subscribe live status (custom rundown groups, active karaoke segment, queue, sources, enriched morning data)
  * - hourly forecast strip from input_text.wetter_stunden and input_text.wetter_regen
  * Plain Java without Android UI dependencies so it can be unit-tested and rendered off-device.
  */
@@ -21,6 +21,16 @@ final class MorgenDaten {
         int farbe = 0xFF8FA3B5;
     }
 
+    static final class Gruppe {
+        String art = "", label = "", thema = "";
+        int count = 1;
+    }
+
+    static final class TerminDetail {
+        String zeit = "", bis = "", titel = "", ort = "";
+        int farbe = 0xFF6FB3F2;
+    }
+
     static final class Meldung {
         String id = "", q = "", t = "", x = "", l = "", bild = "";
         double z;   // epoch seconds
@@ -28,19 +38,26 @@ final class MorgenDaten {
 
     static final class Segment {
         String id = "", art = "", text = "";
+        String label = "", kategorie = "", thema = "", naechstes = "";
+        int gruppe, gruppeI, gruppeN = 1;
         double t0, dauer, jetzt;
     }
 
     static final class MorgenInfo {
         String name = "";
         List<String> termine = Collections.emptyList();
+        List<TerminDetail> termineDetail = Collections.emptyList();
         String muell = "";
         int liste;
+        List<String> listeItems = Collections.emptyList();
         String schirm = "";
         boolean glatt;
+        Integer wxTemp, wxHi, wxLo, wxWind;
+        String wxZustand = "";
 
         boolean hatInhalt() {
-            return !schirm.isEmpty() || glatt || !termine.isEmpty() || !muell.isEmpty() || liste > 0;
+            return !schirm.isEmpty() || glatt || !termine.isEmpty() || !termineDetail.isEmpty()
+                || !muell.isEmpty() || liste > 0;
         }
     }
 
@@ -48,6 +65,7 @@ final class MorgenDaten {
         boolean aktiv;
         String art = "";          // "morgen" | "news" | "eil" | ""
         String dash = "";
+        String modusLabel = "";
         List<String> ziel = Collections.emptyList();
         int n, i = -1;
         boolean pause;
@@ -57,6 +75,7 @@ final class MorgenDaten {
         long clockOffsetMs;       // serverTimeMs - localTimeMs
         MorgenInfo morgen;
         Segment seg;
+        List<Gruppe> gruppen = Collections.emptyList();
         List<Meldung> items = Collections.emptyList();
         Map<String, Quelle> quellen = Collections.emptyMap();
         boolean demo;
@@ -111,7 +130,7 @@ final class MorgenDaten {
     static final class HeuteVerlauf {
         List<Stunde> stunden = Collections.emptyList();
         String zusammenfassung = "";
-        String nassWort = "";   // word highlighted in blue if present in zusammenfassung
+        String nassWort = "";
     }
 
     // ---- HA WebSocket commands -------------------------------------------------------------------------------------
@@ -138,6 +157,7 @@ final class MorgenDaten {
         s.aktiv = Boolean.TRUE.equals(m.get("aktiv"));
         s.art = str(m.get("art"));
         s.dash = str(m.get("dash"));
+        s.modusLabel = str(m.get("modus_label"));
         s.n = numInt(m.get("n"), 0);
         s.i = numInt(m.get("i"), -1);
         s.pause = Boolean.TRUE.equals(m.get("pause"));
@@ -157,6 +177,21 @@ final class MorgenDaten {
             s.ziel = z;
         }
 
+        if (m.get("gruppen") instanceof List) {
+            List<Gruppe> gs = new ArrayList<>();
+            for (Object o : (List<?>) m.get("gruppen")) {
+                if (!(o instanceof Map)) continue;
+                Map<?, ?> gm = (Map<?, ?>) o;
+                Gruppe g = new Gruppe();
+                g.art = str(gm.get("art"));
+                g.label = str(gm.get("label"));
+                g.thema = str(gm.get("thema"));
+                g.count = Math.max(1, numInt(gm.get("count"), 1));
+                gs.add(g);
+            }
+            s.gruppen = gs;
+        }
+
         if (m.get("morgen") instanceof Map) {
             Map<?, ?> mm = (Map<?, ?>) m.get("morgen");
             MorgenInfo mi = new MorgenInfo();
@@ -173,6 +208,54 @@ final class MorgenDaten {
                 }
                 mi.termine = ts;
             }
+            if (mm.get("termine_detail") instanceof List) {
+                List<TerminDetail> td = new ArrayList<>();
+                for (Object o : (List<?>) mm.get("termine_detail")) {
+                    if (!(o instanceof Map)) continue;
+                    Map<?, ?> dm = (Map<?, ?>) o;
+                    TerminDetail d = new TerminDetail();
+                    d.zeit = str(dm.get("zeit"));
+                    d.bis = str(dm.get("bis"));
+                    d.titel = str(dm.get("titel"));
+                    d.ort = str(dm.get("ort"));
+                    d.farbe = hexFarbe(str(dm.get("farbe")), 0xFF6FB3F2);
+                    if (!d.titel.isEmpty()) td.add(d);
+                }
+                mi.termineDetail = td;
+            } else if (!mi.termine.isEmpty()) {
+                List<TerminDetail> td = new ArrayList<>();
+                int[] pal = {0xFF6FB3F2, 0xFF6CC483, 0xFFF2B45C, 0xFFB49CF2};
+                for (int k = 0; k < mi.termine.size(); k++) {
+                    String raw = mi.termine.get(k);
+                    TerminDetail d = new TerminDetail();
+                    if (raw.length() > 6 && raw.charAt(2) == ':' && raw.charAt(5) == ' ') {
+                        d.zeit = raw.substring(0, 5);
+                        d.titel = raw.substring(6).trim();
+                    } else {
+                        d.zeit = "Heute";
+                        d.titel = raw;
+                    }
+                    d.farbe = pal[k % pal.length];
+                    td.add(d);
+                }
+                mi.termineDetail = td;
+            }
+            if (mm.get("liste_items") instanceof List) {
+                List<String> li = new ArrayList<>();
+                for (Object o : (List<?>) mm.get("liste_items")) {
+                    String t = str(o);
+                    if (!t.isEmpty()) li.add(t);
+                }
+                mi.listeItems = li;
+            }
+            if (mm.get("wetter") instanceof Map) {
+                Map<?, ?> wm = (Map<?, ?>) mm.get("wetter");
+                mi.wxTemp = optInt(wm.get("temp"));
+                mi.wxHi = optInt(wm.get("hi"));
+                mi.wxLo = optInt(wm.get("lo"));
+                mi.wxWind = optInt(wm.get("wind"));
+                mi.wxZustand = str(wm.get("zustand"));
+            }
             s.morgen = mi;
         }
 
@@ -182,6 +265,13 @@ final class MorgenDaten {
             seg.id = str(sm.get("id"));
             seg.art = str(sm.get("art"));
             seg.text = str(sm.get("text"));
+            seg.label = str(sm.get("label"));
+            seg.kategorie = str(sm.get("kategorie"));
+            seg.thema = str(sm.get("thema"));
+            seg.naechstes = str(sm.get("naechstes"));
+            seg.gruppe = numInt(sm.get("gruppe"), Math.max(0, s.i));
+            seg.gruppeI = numInt(sm.get("gruppe_i"), 0);
+            seg.gruppeN = Math.max(1, numInt(sm.get("gruppe_n"), 1));
             seg.t0 = numDbl(sm.get("t0"), 0);
             seg.dauer = numDbl(sm.get("dauer"), 0);
             seg.jetzt = numDbl(sm.get("jetzt"), 0);
@@ -251,7 +341,6 @@ final class MorgenDaten {
         out.stunden = list;
         if (list.isEmpty()) return out;
 
-        // One-line summary identical to wetter.js
         int lo = 99, hi = -99;
         for (Stunde h : list) {
             if (h.temp < lo) lo = h.temp;
@@ -328,7 +417,6 @@ final class MorgenDaten {
         return c.get(Calendar.HOUR_OF_DAY);
     }
 
-    /** Parses input_text.wetter_regen: "YYYYMMDDHH|p0,p1,...|YYYYMMDD|d0,d1,..." -> hour -> pct. */
     private static Map<Integer, Integer> regenStunden(String roh, long nowMs) {
         Map<Integer, Integer> out = new LinkedHashMap<>();
         if (roh == null || roh.isEmpty()) return out;
@@ -343,7 +431,7 @@ final class MorgenDaten {
             c.set(y, mo, d, hh, 0, 0);
             c.set(Calendar.MILLISECOND, 0);
             long baseMs = c.getTimeInMillis();
-            if (Math.abs(nowMs - baseMs) > 28L * 3600_000L) return out;   // stale
+            if (Math.abs(nowMs - baseMs) > 28L * 3600_000L) return out;
             String[] ps = parts[1].split(",");
             for (int i = 0; i < ps.length; i++) {
                 String p = ps[i].trim();
@@ -356,8 +444,6 @@ final class MorgenDaten {
         } catch (NumberFormatException ignored) {}
         return out;
     }
-
-    // ---- temperature colour scale (matches wetter.js T_SCALE) ------------------------------------------------------
 
     private static final int[][] T_SCALE = {
         {-5, 111, 168, 255}, {0, 154, 211, 255}, {10, 212, 226, 122}, {20, 242, 165, 74}, {30, 232, 85, 78}
@@ -398,22 +484,48 @@ final class MorgenDaten {
     // ---- generic privacy-free demo data for local previews & screenshots -------------------------------------------
 
     static NewsStatus demo(boolean storyPhase, boolean mehrPhase, long nowMs) {
+        return demoArt(storyPhase ? (mehrPhase ? "mehr" : "meldung") : "wetter", nowMs);
+    }
+
+    static NewsStatus demoArt(String phase, long nowMs) {
         NewsStatus s = new NewsStatus();
         s.aktiv = true;
         s.demo = true;
         s.art = "morgen";
-        s.n = 4;
-        s.i = storyPhase ? 1 : 0;
         s.karaoke = true;
         s.sprecherName = "Stimme";
+        s.modusLabel = "KI-Moderation · locker";
+
+        String[][] grp = {
+            {"begruessung", "Begrüßung", ""}, {"meldung", "Lokal", "ort"}, {"meldung", "Politik", "politik"},
+            {"meldung", "Wirtschaft", "wirtschaft"}, {"meldung", "Sport", "sport"},
+            {"kalender", "Kalender", ""}, {"wetter", "Wetter", ""}, {"abschied", "Abschied", ""}
+        };
+        List<Gruppe> gs = new ArrayList<>();
+        for (String[] g : grp) {
+            Gruppe gr = new Gruppe();
+            gr.art = g[0]; gr.label = g[1]; gr.thema = g[2]; gr.count = "ort".equals(g[2]) ? 2 : 1;
+            gs.add(gr);
+        }
+        s.gruppen = gs;
+        s.n = 9;
 
         MorgenInfo mi = new MorgenInfo();
-        mi.schirm = "Schirm einpacken – ab 14 Uhr Regen";
-        mi.termine = new ArrayList<>();
-        mi.termine.add("09:30 Zahnarzt");
-        mi.termine.add("15:00 Paket abholen");
+        mi.schirm = "Ab 14 Uhr Regen – Schirm mitnehmen";
         mi.muell = "morgen Papiertonne rausstellen";
         mi.liste = 4;
+        mi.listeItems = new ArrayList<>();
+        mi.listeItems.add("Hafermilch"); mi.listeItems.add("Tomaten");
+        mi.listeItems.add("Sauerteigbrot"); mi.listeItems.add("Kaffeebohnen");
+        mi.wxTemp = 11; mi.wxLo = 7; mi.wxHi = 16; mi.wxWind = 14; mi.wxZustand = "partlycloudy";
+
+        mi.termine = new ArrayList<>();
+        mi.termine.add("09:30 Zahnarzt"); mi.termine.add("15:00 Paket abholen"); mi.termine.add("18:30 Sport");
+        List<TerminDetail> td = new ArrayList<>();
+        TerminDetail d1 = new TerminDetail(); d1.zeit = "09:30"; d1.bis = "10:15"; d1.titel = "Zahnarzt"; d1.ort = "Praxis am Markt"; d1.farbe = 0xFF6FB3F2; td.add(d1);
+        TerminDetail d2 = new TerminDetail(); d2.zeit = "15:00"; d2.bis = ""; d2.titel = "Paket abholen"; d2.ort = "Packstation"; d2.farbe = 0xFF6CC483; td.add(d2);
+        TerminDetail d3 = new TerminDetail(); d3.zeit = "18:30"; d3.bis = "19:45"; d3.titel = "Sport"; d3.ort = "Fitnessstudio"; d3.farbe = 0xFFF2B45C; td.add(d3);
+        mi.termineDetail = td;
         s.morgen = mi;
 
         Map<String, Quelle> qm = new LinkedHashMap<>();
@@ -438,24 +550,26 @@ final class MorgenDaten {
         s.items = items;
 
         Segment seg = new Segment();
-        if (storyPhase) {
-            seg.id = "demo1";
-            seg.art = mehrPhase ? "mehr" : "titel";
-            seg.text = mehrPhase ? m1.x : m1.t;
-            seg.dauer = mehrPhase ? 16.0 : 8.0;
-            seg.t0 = nowMs / 1000.0 - seg.dauer * 0.44;
+        if ("kalender".equals(phase)) {
+            s.i = 6; seg.art = "kalender"; seg.gruppe = 5; seg.label = "Kalender"; seg.kategorie = "Kalender";
+            seg.naechstes = "Wetter";
+            seg.text = "Im Kalender stehen heute drei Termine: um halb zehn der Zahnarzt, nachmittags um fünfzehn Uhr ein Paket abholen und heute Abend um halb sieben geht es zum Sport.";
+            seg.dauer = 14.0; seg.t0 = nowMs / 1000.0 - seg.dauer * 0.48;
+        } else if ("meldung".equals(phase) || "mehr".equals(phase)) {
+            s.i = 1; seg.id = "demo1"; seg.art = "mehr".equals(phase) ? "mehr" : "meldung";
+            seg.gruppe = 1; seg.gruppeI = 0; seg.gruppeN = 2; seg.label = "Lokal"; seg.kategorie = "Lokalnachrichten";
+            seg.naechstes = "Politik";
+            seg.text = m1.x;
+            seg.dauer = 15.0; seg.t0 = nowMs / 1000.0 - seg.dauer * 0.46;
         } else {
-            seg.id = "";
-            seg.art = "intro";
-            seg.text = "Draußen sind es 11 Grad, später bis 15. Ab 14 Uhr regnet es, nimm einen Schirm mit. Heute hast du 2 Termine: um 09:30 Zahnarzt und 15:00 Paket abholen.";
-            seg.dauer = 14.0;
-            seg.t0 = nowMs / 1000.0 - seg.dauer * 0.36;
+            s.i = 7; seg.art = "wetter"; seg.gruppe = 6; seg.label = "Wetter"; seg.kategorie = "Wetter";
+            seg.naechstes = "Abschied";
+            seg.text = "Zum Schluss das Wetter: Aktuell sind es elf Grad und leicht bewölkt. Bis Mittag steigt die Temperatur auf sechzehn Grad, ab vierzehn Uhr zieht Regen auf – pack also einen Schirm ein.";
+            seg.dauer = 14.0; seg.t0 = nowMs / 1000.0 - seg.dauer * 0.52;
         }
         s.seg = seg;
         return s;
     }
-
-    // ---- helpers ---------------------------------------------------------------------------------------------------
 
     private static String str(Object o) { return o == null ? "" : String.valueOf(o).trim(); }
 
@@ -465,6 +579,14 @@ final class MorgenDaten {
             try { return Integer.parseInt(((String) o).trim()); } catch (NumberFormatException ignored) {}
         }
         return def;
+    }
+
+    private static Integer optInt(Object o) {
+        if (o instanceof Number) return ((Number) o).intValue();
+        if (o instanceof String && !((String) o).trim().isEmpty()) {
+            try { return Integer.parseInt(((String) o).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return null;
     }
 
     private static double numDbl(Object o, double def) {
