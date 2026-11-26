@@ -54,6 +54,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     static final String SCHONER_NOTIF = "schoner_notif";
     static final String SCHONER_INFO = "schoner_info";
     static final String NEWS = "news_abo";
+    static final String TIMER = "timer_abo";
     private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit", "wetter", "schoner", "morgen"};
     private static final long VERLAUF_GUELTIG = 300_000L;   // like the dashboard page: reload after 5 minutes
 
@@ -99,6 +100,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     // "Mein Tag" and live news reading (echo_show/news/subscribe) + 4-image article cache
     private volatile MorgenDaten.NewsStatus newsStatus = new MorgenDaten.NewsStatus();
+    private volatile TimerDaten.Zustand timerZustand = new TimerDaten.Zustand();
     private volatile boolean morgenAutoOffen;
     private final Object artikelLock = new Object();
     private final LinkedHashMap<String, Bitmap[]> artikelBilder = new LinkedHashMap<>();
@@ -146,6 +148,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo aboSchonerNotif = new Dauerabo(SCHONER_NOTIF, zeit, melder);
     private final Dauerabo aboSchonerInfo = new Dauerabo(SCHONER_INFO, zeit, melder);
     private final Dauerabo aboNews = new Dauerabo(NEWS, zeit, melder);
+    private final Dauerabo aboTimer = new Dauerabo(TIMER, zeit, melder);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
 
@@ -197,6 +200,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         vorlesenAuto = !Boolean.FALSE.equals(s.get("vorlesenAuto"));
         schonerAbgleichen();
         newsAbgleichen();
+        timerAbgleichen();
         schonerOptionenMelden(opt);
         szeneOrtMelden(szeneOrt);
         vorschauMelden();
@@ -240,6 +244,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         else if (("ks.ha.subscription." + SCHONER_NOTIF).equals(event)) schonerNotifEreignis(payload);
         else if (("ks.ha.subscription." + SCHONER_INFO).equals(event)) schonerInfoEreignis(payload);
         else if (("ks.ha.subscription." + NEWS).equals(event)) newsEreignis(payload);
+        else if (("ks.ha.subscription." + TIMER).equals(event)) timerEreignis(payload);
         else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
             if ("ks.screensaver.state".equals(event)) {
                 schonerEventDa = true;
@@ -267,6 +272,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboSchonerNotif.stop();
         aboSchonerInfo.stop();
         aboNews.stop();
+        aboTimer.stop();
         morgenAutoOffen = false;
         if (main != null) main.removeCallbacks(morgenAutoZu);
         synchronized (artikelLock) {
@@ -416,15 +422,23 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     }
 
     private void kalenderLaden(PluginHost h, TestAnsicht a) {
+        Kalender.Spanne sp = Kalender.spanne(a.m.param);
+        a.m.kalenderSpanne = sp;
+        kalenderBereichLaden(a, sp.start, sp.tageAnzahl);
+    }
+
+    /** Loads any calendar date range (initial open or when user switches Tag / 3 Tage / Woche / Monat / Liste). */
+    void kalenderBereichLaden(TestAnsicht a, Calendar start, int tageAnzahl) {
+        PluginHost h = host;
+        if (h == null) return;
         Messung m = a.m;
-        Kalender.Spanne sp = Kalender.spanne(m.param);
-        m.kalenderSpanne = sp;
         try {
-            h.haCall(Kalender.anfrage(kalender, sp.start, sp.tageAnzahl), (ok, data, error) -> {
-                m.tDaten = SystemClock.uptimeMillis();
+            h.haCall(Kalender.anfrage(kalender, start, tageAnzahl), (ok, data, error) -> {
+                if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
                 if (ok) {
                     try {
-                        m.termine = Kalender.lesen(data, sp.start, sp.tageAnzahl);
+                        m.termine = Kalender.lesenEreignisse(data);
+                        m.datenFehler = null;
                     } catch (RuntimeException e) {
                         m.datenFehler = "Antwort unlesbar";
                     }
@@ -434,8 +448,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 main().post(() -> TestAnsicht.sicher(a::datenDa));
             });
         } catch (RuntimeException e) {
-            m.tDaten = SystemClock.uptimeMillis();
+            if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
             m.datenFehler = "haCall: " + e.getMessage();
+            main().post(() -> TestAnsicht.sicher(a::datenDa));
         }
     }
 
@@ -1005,6 +1020,57 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     MorgenDaten.NewsStatus newsStatus() { return newsStatus; }
 
+    TimerDaten.Zustand timerZustand() { return timerZustand; }
+
+    // ---- live timers & alarms (render_template subscription) -------------------------------------------------------
+
+    private void timerAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        Map<String, Object> msg = h.isHeadless() ? null : TimerDaten.abo();
+        aboTimer.setzen(h, msg, msg == null ? null : "timer");
+    }
+
+    private void timerEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboTimer.ereignis(p);
+            return;
+        }
+        if (!(p.get("event") instanceof Map)) return;
+        Map<?, ?> ev = (Map<?, ?>) p.get("event");
+        if (!ev.containsKey("result")) return;
+        TimerDaten.Zustand z;
+        try {
+            z = TimerDaten.lesen(ev.get("result"), Json::lesen, System.currentTimeMillis());
+        } catch (RuntimeException e) {
+            return;
+        }
+        timerZustand = z;
+        TestAnsicht a;
+        synchronized (this) {
+            a = aktuell != null && "timer".equals(aktuell.m.ansicht) ? aktuell : null;
+        }
+        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.timerFuellen(z)));
+    }
+
+    /** Generic HA call_service helper for interactive view actions (Timer Pause/Weiter/Löschen/Stopp). */
+    void haDienst(String domain, String service, Map<String, Object> target, Map<String, Object> data) {
+        PluginHost h = host;
+        if (h == null) return;
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "call_service");
+        msg.put("domain", domain);
+        msg.put("service", service);
+        if (target != null && !target.isEmpty()) msg.put("target", target);
+        if (data != null && !data.isEmpty()) msg.put("service_data", data);
+        try {
+            h.haCall(msg, (ok, resp, err) -> {
+                PluginHost hh = host;
+                if (!ok && hh != null) hh.log("dienst " + domain + "." + service + ": " + err);
+            });
+        } catch (RuntimeException ignored) {}
+    }
+
     // ---- "Mein Tag" and live news reading (echo_show/news/subscribe) -----------------------------------------------
 
     private void newsAbgleichen() {
@@ -1419,7 +1485,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if ("timer".equals(ansicht) && a.matches("\\d{1,5}")) {
             p.put("sekunden", Integer.parseInt(a));
         } else if ("kalender".equals(ansicht)) {
-            if ("wochenende".equals(a) || "woche".equals(a) || "tag".equals(a)) p.put("zeitraum", a);
+            if ("wochenende".equals(a) || "woche".equals(a) || "tag".equals(a) || "3tage".equals(a) || "monat".equals(a) || "liste".equals(a)) p.put("zeitraum", a);
             else if (Kalender.TAG.matcher(a).matches()) p.put("tag", a);
             else if (a.contains(",") && a.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})+")) p.put("tage", a);
             if (!b.isEmpty()) {

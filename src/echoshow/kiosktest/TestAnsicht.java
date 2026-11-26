@@ -83,6 +83,11 @@ final class TestAnsicht implements OverlayFactory {
         if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setNews(st);
     }
 
+    /** Main thread: live timers & alarms updated. */
+    void timerFuellen(TimerDaten.Zustand z) {
+        if (aktiv != null && aktiv.timerView != null) aktiv.timerView.setZustand(z);
+    }
+
     /** Main thread: downloaded article thumbnail + blurred backdrop arrived. */
     void morgenBildSetzen(String url, Bitmap scharf, Bitmap weich) {
         if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setArtikelBild(url, scharf, weich);
@@ -147,6 +152,8 @@ final class TestAnsicht implements OverlayFactory {
         AnwesenheitView anwView;
         WetterView wetterView;
         MorgenView morgenView;
+        KalenderView kalenderView;
+        TimerView timerView;
         String messZeit = "", messFrames = "";
         ScrollView scroll;
         ObjectAnimator autoScroll;
@@ -168,8 +175,8 @@ final class TestAnsicht implements OverlayFactory {
             root.setOrientation(LinearLayout.VERTICAL);
             root.setBackgroundColor(th.color("surface"));
             root.setClickable(true);   // touches stay in the test view
-            // presence, weather, screensaver preview and "Mein Tag" bring their own full-screen layout
-            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht) && !"schoner".equals(m.ansicht) && !"morgen".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            // only the 50-row stress list keeps the test header; all real views are full-screen native layouts
+            if ("liste".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
@@ -585,6 +592,7 @@ final class TestAnsicht implements OverlayFactory {
             }
             if (wetterView != null) wetterView.pauseGeaendert();
             if (morgenView != null) morgenView.pauseGeaendert();
+            if (timerView != null) timerView.pauseGeaendert();
         }
 
         // ---- (d) presence -------------------------------------------------------------------------------------
@@ -608,143 +616,27 @@ final class TestAnsicht implements OverlayFactory {
             if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
         }
 
-        // ---- (a) calendar -------------------------------------------------------------------------------------
+        // ---- (a) calendar (full-screen native port of kalender.py) --------------------------------------------
 
         private void kalender(FrameLayout inhalt) {
-            scroll = new ScrollView(ctx);
-            scroll.setFillViewport(true);
-            kalenderListe = new LinearLayout(ctx);
-            kalenderListe.setOrientation(LinearLayout.VERTICAL);
-            kalenderListe.setPadding(th.px(24), th.px(16), th.px(24), th.px(24));
-            scroll.addView(kalenderListe);
-            inhalt.addView(scroll);
-            if (m.termine != null || m.datenFehler != null) kalenderFuellen();
-            else {
-                kalenderListe.addView(kopfzeile());
-                kalenderListe.addView(hinweis("Lade Termine …"));
-            }
-        }
-
-        private TextView kopfzeile() {
-            TextView t = new TextView(ctx);
             Kalender.Spanne sp = m.kalenderSpanne != null ? m.kalenderSpanne : Kalender.spanne(m.param);
-            SimpleDateFormat fmt = new SimpleDateFormat("EEEE, d. MMMM yyyy", Locale.GERMAN);
-            if (sp.tageAnzahl <= 1) {
-                t.setText(fmt.format(sp.start.getTime()));
-            } else {
-                Calendar ende = (Calendar) sp.start.clone();
-                ende.add(Calendar.DAY_OF_MONTH, sp.tageAnzahl - 1);
-                SimpleDateFormat kurz = new SimpleDateFormat("EEE d. MMM", Locale.GERMAN);
-                String praefix = "wochenende".equals(sp.zeitraum) ? "Wochenende · " : ("woche".equals(sp.zeitraum) ? "Woche · " : "");
-                t.setText(praefix + kurz.format(sp.start.getTime()) + " – " + kurz.format(ende.getTime()));
-            }
-            th.styleText(t, 20, 500, "onSurfaceVariant");
-            t.setPadding(0, 0, 0, th.px(12));
-            return t;
-        }
-
-        private TextView hinweis(String text) {
-            TextView t = new TextView(ctx);
-            t.setText(text);
-            th.styleText(t, 18, 400, "onSurfaceVariant");
-            t.setPadding(0, th.px(24), 0, 0);
-            return t;
+            kalenderView = new KalenderView(ctx, th, new KalenderView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void bereichLaden(Calendar start, int tageAnzahl) {
+                    plugin.kalenderBereichLaden(TestAnsicht.this, start, tageAnzahl);
+                }
+            }, sp);
+            inhalt.addView(kalenderView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.termine != null || m.datenFehler != null) kalenderFuellen();
         }
 
         void kalenderFuellen() {
-            if (zerstoert || kalenderListe == null || gefuellt) return;
-            gefuellt = true;
-            kalenderListe.removeAllViews();
-            kalenderListe.addView(kopfzeile());
-            List<Kalender.Termin> termine = m.termine;
-            Kalender.Spanne sp = m.kalenderSpanne != null ? m.kalenderSpanne : Kalender.spanne(m.param);
-            if (m.datenFehler != null) {
-                kalenderListe.addView(hinweis("Fehler: " + m.datenFehler));
-            } else if (sp.tageAnzahl <= 1) {
-                if (termine == null || termine.isEmpty()) {
-                    kalenderListe.addView(hinweis("Keine Termine an diesem Tag."));
-                } else {
-                    for (Kalender.Termin t : termine) kalenderListe.addView(termin(t));
-                }
-            } else {
-                SimpleDateFormat tagFmt = new SimpleDateFormat("EEEE, d. MMMM", Locale.GERMAN);
-                Calendar cur = (Calendar) sp.start.clone();
-                for (int d = 0; d < sp.tageAnzahl; d++) {
-                    String dk = Kalender.datumKey(cur);
-                    boolean mark = sp.markiert.contains(dk);
-                    List<Kalender.Termin> tagTermine = new ArrayList<>();
-                    if (termine != null) {
-                        for (Kalender.Termin t : termine) if (dk.equals(t.datum)) tagTermine.add(t);
-                    }
-                    LinearLayout box = new LinearLayout(ctx);
-                    box.setOrientation(LinearLayout.VERTICAL);
-                    box.setPadding(th.px(14), th.px(10), th.px(14), th.px(6));
-                    if (mark) {
-                        GradientDrawable bg = new GradientDrawable();
-                        bg.setColor(0x1A8FC0FF);
-                        bg.setCornerRadius(th.px(16));
-                        bg.setStroke(Math.max(1, Math.round(th.px(1) * 1.5f)), 0x8C8FC0FF);
-                        box.setBackground(bg);
-                    }
-                    TextView dh = new TextView(ctx);
-                    dh.setText(tagFmt.format(cur.getTime()));
-                    th.styleText(dh, 16, mark ? 700 : 500, mark ? "onSurface" : "onSurfaceVariant");
-                    if (mark) dh.setTextColor(0xFFFFFFFF);
-                    dh.setPadding(th.px(2), 0, 0, th.px(8));
-                    box.addView(dh);
-                    if (tagTermine.isEmpty()) {
-                        TextView leer = new TextView(ctx);
-                        leer.setText("Keine Termine");
-                        th.styleText(leer, 15, 400, "onSurfaceVariant");
-                        leer.setPadding(th.px(2), 0, 0, th.px(6));
-                        box.addView(leer);
-                    } else {
-                        for (Kalender.Termin t : tagTermine) box.addView(termin(t));
-                    }
-                    LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                    blp.bottomMargin = th.px(10);
-                    kalenderListe.addView(box, blp);
-                    cur.add(Calendar.DAY_OF_MONTH, 1);
-                }
+            if (zerstoert || kalenderView == null) return;
+            kalenderView.setDaten(m.termine, m.datenFehler);
+            if (!gefuellt) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
             }
-            if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
-        }
-
-        private View termin(Kalender.Termin t) {
-            LinearLayout zeile = new LinearLayout(ctx);
-            zeile.setOrientation(LinearLayout.HORIZONTAL);
-            zeile.setGravity(Gravity.CENTER_VERTICAL);
-            zeile.setPadding(th.px(16), th.px(12), th.px(16), th.px(12));
-            zeile.setBackground(karte());
-            TextView zeit = new TextView(ctx);
-            zeit.setText(t.zeit);
-            th.styleText(zeit, 17, 600, "onSurface");
-            zeile.addView(zeit, new LinearLayout.LayoutParams(th.px(120), ViewGroup.LayoutParams.WRAP_CONTENT));
-            View balken = new View(ctx);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(t.farbe);
-            bg.setCornerRadius(th.px(3));
-            balken.setBackground(bg);
-            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(th.px(5), th.px(44));
-            blp.rightMargin = th.px(16);
-            zeile.addView(balken, blp);
-            LinearLayout text = new LinearLayout(ctx);
-            text.setOrientation(LinearLayout.VERTICAL);
-            TextView titel = new TextView(ctx);
-            titel.setText(t.titel);
-            th.styleText(titel, 18, 500, "onSurface");
-            titel.setSingleLine(true);
-            titel.setEllipsize(TextUtils.TruncateAt.END);
-            TextView unter = new TextView(ctx);
-            unter.setText(t.ort.isEmpty() ? t.kalender : t.ort + " · " + t.kalender);
-            th.styleText(unter, 14, 400, "onSurfaceVariant");
-            unter.setSingleLine(true);
-            unter.setEllipsize(TextUtils.TruncateAt.END);
-            text.addView(titel);
-            text.addView(unter);
-            zeile.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            zeile.setLayoutParams(abstand());
-            return zeile;
         }
 
         private GradientDrawable karte() {
@@ -760,12 +652,19 @@ final class TestAnsicht implements OverlayFactory {
             return lp;
         }
 
-        // ---- (b) timer ----------------------------------------------------------------------------------------
+        // ---- (b) timer & alarms (full-screen native port of timer_ansicht.py) ---------------------------------
 
         private void timer(FrameLayout inhalt) {
-            TimerRing ring = new TimerRing(ctx, m, th.typeface(500), th.color("onSurface"), th.color("onSurfaceVariant"));
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(th.px(380), th.px(380), Gravity.CENTER);
-            inhalt.addView(ring, lp);
+            int fbSek = m.param != null && m.param.get("sekunden") instanceof Number ? ((Number) m.param.get("sekunden")).intValue() : 0;
+            timerView = new TimerView(ctx, th, new TimerView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public boolean pausiert() { return plugin.wetterPausiert(); }
+                @Override public void haDienst(String domain, String service, java.util.Map<String, Object> target, java.util.Map<String, Object> data) {
+                    plugin.haDienst(domain, service, target, data);
+                }
+            }, fbSek);
+            timerView.setZustand(plugin.timerZustand());
+            inhalt.addView(timerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
         // ---- (c) list of 50 rows ------------------------------------------------------------------------------

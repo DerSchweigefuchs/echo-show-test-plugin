@@ -7,8 +7,8 @@ Fünf native Vollbild-Ansichten über dem Dashboard plus ein nativer Kiosk-Satel
 
 | Ansicht | Inhalt |
 |---|---|
-| `kalender` | Tages-, Wochenend- oder Wochenliste aus `calendar.get_events` (nur lesend), mit hervorgehobenen Tagen (`tag`, `zeitraum`, `tage`) |
-| `timer` | Countdown-Ring, sekündlich oder flüssig |
+| `kalender` | Nativer 1:1-Nachbau der Lovelace-Kalenderseite: 5 Ansichten (**Tag**, **3 Tage**, **Woche**, **Monat**, **Liste**), Zeitraster mit Ganztagesbalken, Live-Jetzt-Linie, hervorgehobenen KI-Tagen (`tag`, `zeitraum`, `tage`), Zeitraum-Navigation und Termin-Detailkarte aus `calendar.get_events` |
+| `timer` | Nativer 1:1-Nachbau der Lovelace-Timer-&-Wecker-Seite: großer Hero-Ring (mit pulsierendem Alarm-Halo beim Klingeln), weitere laufende Timer, nächste Wecker (24 h) und interaktive Steuerung (`Pause`/`Weiter`, `Löschen`, `Stopp`, `Wecker aus`) aus Home Assistant |
 | `liste` | 50 Zeilen mit Auto-Scroll als Lasttest |
 | `anwesenheit` | Nachbau einer Lovelace-Anwesenheitsseite als schwerer Vergleichstest: Personenkarten, Zeitleiste 0–24 Uhr und Woche, auf einem Canvas gezeichnet |
 | `wetter` | Live-Wetterszene (6 Landschaften) plus Vorhersage-Sheet unten (**Heute** 8-Stunden-Verlauf / **Woche** 6 Tage mit markierten Tagen via `ansicht` & `tage`), rein aus Home Assistant (`wetter_stunden`/`wetter_woche`/`wetter_regen`/`wetter_tage`) |
@@ -23,7 +23,7 @@ In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwis
 ## Öffnen
 - Link: `ks://plugin/echo-show-test/zeigen/kalender` (oder `/timer`, `/liste`, `/anwesenheit`, `/wetter`), optional mit Tag oder Sekunden: `/zeigen/timer/90`
 - Befehle für Gesten, Drawer oder Home Assistant: `kalender`, `timer`, `liste`, `anwesenheit`, `wetter`, `schliessen`
-- Über die Integration „Echo Show Dashboard“: Abo `echo_show/ansicht/abo`. Das Plugin reagiert nur auf die Seiten `test-kalender`, `test-timer`, `test-liste`, `test-anwesenheit` und `test-wetter` und meldet `bereit` und `gezeigt` mit Zeiten zurück. Alle anderen Seiten bleiben beim Dashboard.
+- Über die Integration „Echo Show Dashboard“: Abo `echo_show/ansicht/abo`. Reagiert auf die Seiten `test-kalender`, `test-timer`, `test-liste`, `test-anwesenheit`, `test-wetter` sowie auf native KI-Aufrufe (`nativ: true`) für `wetter`, `kalender`, `timer` und `anwesenheit` und meldet `bereit` und `gezeigt` mit Zeiten zurück. Alle anderen Seiten bleiben beim Dashboard.
 
 ## Anwesenheit
 - Personen: ein `render_template`-Abo über alle `person`-Entitäten, oder nur die in der Einstellung **Personen** genannten. Es bleibt aktiv, solange das Plugin läuft, damit die Ansicht die Personen sofort hat (wie die Zustände im Dashboard).
