@@ -3,11 +3,11 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer mit Figur des Tages) sowie nativer Bildschirmschoner „Wetterszene“ mit Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige. Öffnet Ansichten per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period, persistent_notification/subscribe).",
+  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene mit 6 Landschaften und Figur des Tages) sowie nativer Bildschirmschoner „Wetterszene“ mit interaktiver Vorschau (Zeit, Landschaft & Wetter), Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige. Liest Home Assistant nur.",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [
@@ -87,28 +87,45 @@
       "type": "string",
       "title": "Wetter-Entität",
       "default": "",
-      "group": "Wetter-Test",
+      "group": "Wetter & Landschaft",
       "description": "weather-Entität für die Szene. Leer: die erste weather-Entität. Sonne aus sun.sun, Mond und Sterne aus zone.home, alles nur lesend und nur zur Laufzeit."
+    },
+    {
+      "key": "szeneOrt",
+      "type": "select",
+      "title": "Landschaft",
+      "default": "täglich wechseln",
+      "options": [
+        "täglich wechseln",
+        "meer",
+        "tal",
+        "see",
+        "lichtung",
+        "gipfel",
+        "felder"
+      ],
+      "group": "Wetter & Landschaft",
+      "description": "Landschaft für Wetterszene und Bildschirmschoner: täglich automatisch wechseln (alle 6 Orte reihum) oder fest auswählen."
     },
     {
       "key": "sternbildNamen",
       "type": "boolean",
       "title": "Sternbilder beschriften",
       "default": true,
-      "group": "Wetter-Test",
+      "group": "Wetter & Landschaft",
       "description": "Namen der Sternbilder am Nachthimmel zeigen."
     },
     {
       "key": "wetterFps",
       "type": "select",
-      "title": "Bildrate der Szene",
+      "title": "Bildrate der Wetter-Ansicht",
       "default": "30",
       "options": [
         "30",
         "24"
       ],
-      "group": "Wetter-Test",
-      "description": "Ziel-Bildrate der Wetterszene. Sie pausiert ganz, solange sie nicht sichtbar ist, der Bildschirmschoner läuft oder der Bildschirm aus ist."
+      "group": "Wetter & Landschaft",
+      "description": "Ziel-Bildrate der Wetter-Testansicht. Pausiert automatisch bei Bildschirmschoner oder ausgeschaltetem Bildschirm."
     },
     {
       "key": "schonerUhr",
@@ -234,7 +251,7 @@
     },
     {
       "id": "schoner",
-      "title": "Bildschirmschoner-Vorschau zeigen (Link: schoner/zeitraffer oder schoner/HH:MM)"
+      "title": "Bildschirmschoner-Vorschau (Zeit, Landschaft & Wetter testen)"
     },
     {
       "id": "schliessen",

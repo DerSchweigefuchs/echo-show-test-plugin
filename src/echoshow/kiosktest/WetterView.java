@@ -174,15 +174,21 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private final Aktionen aktionen;
     private WetterLage.Daten daten;
     private WetterLage lage = new WetterLage("cloudy");
-    private final String modus;        // "live", "zeitraffer" or "fest"
-    private final long festZeit;
-    private final long rafferStart = System.currentTimeMillis(), erstellt = SystemClock.uptimeMillis();
+    private String modus;              // "live", "zeitraffer" or "fest"
+    private long festZeit;
+    private long rafferStart = System.currentTimeMillis();
+    private final long erstellt = SystemClock.uptimeMillis();
     private final boolean namen;
     private final long intervallNs;
     private final boolean schoner, schonerVorschau;
     private final SchonerUi schonerUi;
+    private final Landschaften landschaften = new Landschaften();
     private volatile SchonerDaten.Optionen schonerOpt;
     private volatile SchonerDaten.Zustand schonerZustand;
+    private volatile String ortWahl = "auto";
+    private String ort = "meer", testCond;
+    private Runnable tapAktion;
+    private int tagNrAktuell;
     private int monat = Calendar.getInstance().get(Calendar.MONTH);
     String mess1 = "", mess2 = "";
 
@@ -576,6 +582,51 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         invalidate();
     }
 
+    /** Landscape selection: "auto" (daily rotation) or one of see, lichtung, tal, meer, gipfel, felder. */
+    void setOrt(String wahl) {
+        String n = wahl == null || wahl.trim().isEmpty() ? "auto" : wahl.trim().toLowerCase(Locale.ROOT);
+        if (n.equals(ortWahl)) return;
+        ortWahl = n;
+        momentUm = -1;
+        himmelKey = "";
+        invalidate();
+    }
+
+    /** Optional tap callback in preview mode (e.g. toggle interactive control bar). */
+    void setTapAktion(Runnable r) { tapAktion = r; }
+
+    /** Live interactive preview overrides: time mode ("live"|"zeitraffer"|"fest"), "HH:MM", landscape, weather condition ("live"|cond). */
+    void setVorschau(String neuModus, String uhr, String neuOrt, String neuCond) {
+        if (neuOrt != null) ortWahl = neuOrt.trim().toLowerCase(Locale.ROOT);
+        if ("zeitraffer".equals(neuModus)) {
+            if (!"zeitraffer".equals(modus)) rafferStart = simZeit > 0 ? simZeit : System.currentTimeMillis();
+            modus = "zeitraffer";
+            festZeit = 0;
+        } else if ("fest".equals(neuModus) && uhr != null && uhr.matches("\\d{1,2}:\\d{2}")) {
+            String[] tp = uhr.split(":");
+            Calendar c = Calendar.getInstance();
+            c.set(Calendar.HOUR_OF_DAY, Math.min(23, Integer.parseInt(tp[0])));
+            c.set(Calendar.MINUTE, Math.min(59, Integer.parseInt(tp[1])));
+            c.set(Calendar.SECOND, 0);
+            c.set(Calendar.MILLISECOND, 0);
+            festZeit = c.getTimeInMillis();
+            modus = "fest";
+        } else if (neuModus != null) {
+            modus = "live";
+            festZeit = 0;
+        }
+        String zielCond = neuCond == null || "live".equals(neuCond) ? null : neuCond;
+        testCond = zielCond;
+        String effCond = zielCond != null ? zielCond : (daten == null ? "cloudy" : daten.zustand);
+        if (!effCond.equals(lage.cond)) {
+            lage = new WetterLage(effCond);
+            partikel();
+        }
+        momentUm = -1;
+        himmelKey = "";
+        invalidate();
+    }
+
     private static Paint kopfText(Typeface tf, float sp) {
         Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
         t.setTypeface(tf);
@@ -587,10 +638,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     /** New data from Home Assistant (main thread). */
     void setDaten(WetterLage.Daten d) {
-        boolean neueLage = d == null ? daten != null : !d.zustand.equals(lage.cond);
+        String eff = testCond != null ? testCond : (d == null ? "cloudy" : d.zustand);
+        boolean neueLage = !eff.equals(lage.cond);
         daten = d;
         if (neueLage) {
-            lage = new WetterLage(d == null ? "cloudy" : d.zustand);
+            lage = new WetterLage(eff);
             partikel();
             himmelKey = "";
         }
@@ -691,7 +743,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 && Math.abs(e.getX() - downX) < 14 * skala && Math.abs(e.getY() - downY) < 14 * skala) {
                 if (schonerVorschau) {
                     performClick();
-                    aktionen.zurueck();
+                    if (tapAktion != null) tapAktion.run();
+                    else aktionen.zurueck();
                     return true;
                 }
                 float x = (e.getX() - dx) / skala, y = (e.getY() - dy) / skala;
@@ -900,22 +953,30 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         mondZeichnen(c);
         wolken(c, t, anim);
         blitzWolken(c, t);
+        landschaften.voegel(c, lage, licht, t, landY);
         // Subtle atmospheric horizon haze right above the sea
-        if (dunstHorizont != null) {
+        if ("meer".equals(ort) && dunstHorizont != null) {
             mitShader(dunstHorizont);
             c.drawRect(0, hz - 26, W, hz + 2, p);
             p.setShader(null);
         }
         c.save();
         c.translate(0, landY);
-        see(c);
-        meerWasser(c, t);
-        inselUndTurm(c);
-        leuchtturm(c, t);
-        boot(c, t);
-        strandUndDuene(c, t);
-        figur(c, t);
-        grasVorne(c);
+        if ("meer".equals(ort)) {
+            see(c);
+            meerWasser(c, t);
+            inselUndTurm(c);
+            leuchtturm(c, t);
+            boot(c, t);
+            strandUndDuene(c, t);
+            figur(c, t);
+            grasVorne(c);
+        } else {
+            double temp = daten != null && daten.temp != null ? daten.temp : 10;
+            landschaften.vorFigur(c, ort, lage, licht, t, mondDa, sx, mx, sonneAlt, mond, temp, monat, ringe, glanz);
+            figur(c, t);
+            landschaften.nachFigur(c, ort);
+        }
         if (!schoner) {
             mitShader(ausblenden);   // the fade into the dark area stays above the figure's feet (page: wl-fd after the figure)
             c.drawRect(0, 292, W, UNTEN, p);
@@ -989,6 +1050,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             if (mx < -80 || mx > W + 80) mondDa = false;
         }
         int tagNr = (int) Math.floor((simZeit + Calendar.getInstance().getTimeZone().getOffset(simZeit)) / 864e5);
+        tagNrAktuell = tagNr;
+        ort = Landschaften.ortFuer(ortWahl, tagNr);
         Calendar mc = Calendar.getInstance();
         mc.setTimeInMillis(simZeit);
         monat = mc.get(Calendar.MONTH);
@@ -1026,7 +1089,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             figurKey = figurCfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skala;
             if (!figurKey.equals(E.figurKey) && E.figurBaut == null && anim >= E.figurFehlerBis) figurBauen(figurKey, figurCfg, fl, skala);
         }
-        String hk = Math.round(Math.max(-15, Math.min(15, sonneAlt)) * 20) + (steigt ? "s" : "f") + lage.cond + mondDa + (schoner ? "S" + Math.round(viewH) : "");
+        String hk = Math.round(Math.max(-15, Math.min(15, sonneAlt)) * 20) + (steigt ? "s" : "f") + lage.cond + mondDa + ort + (schoner ? "S" + Math.round(viewH) : "");
         if (!hk.equals(himmelKey) || himmelShader == null) {
             himmelKey = hk;
             farben(L);
@@ -1259,8 +1322,12 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             int base = WetterLage.mix(wn[1], wt[1], stufeTag), soll = WetterLage.tont(WetterLage.mix(wn[1], wt[1], L.tag), y, L);
             wolkenFilter[i] = filter(base, soll);
         }
-        // land, sea, island, lighthouse, boat, beach, dune, grass
+        // land, sea, island, lighthouse, boat, beach, dune, grass (plus the five other landscapes)
         WetterLage.Land P = lage.land(L, mondDa, monat);
+        if (!"meer".equals(ort)) {
+            double temp = daten != null && daten.temp != null ? daten.temp : 10;
+            landschaften.farben(ort, lage, L, P, monat, mondDa, temp, hz, landY, tagNrAktuell);
+        }
         float nacht = 1 - L.tag;
         float tY = landY;
         int himmelUnten = WetterLage.tont(WetterLage.mix(L.himmel[1], L.himmel[2], schoner ? .8f : (HZ / H - .3f) / .25f), hz, L);

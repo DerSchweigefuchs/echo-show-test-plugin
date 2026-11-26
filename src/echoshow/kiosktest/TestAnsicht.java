@@ -19,9 +19,11 @@ import android.view.ViewTreeObserver;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import java.text.SimpleDateFormat;
 import java.util.List;
@@ -80,6 +82,11 @@ final class TestAnsicht implements OverlayFactory {
     /** Main thread: screensaver settings updated. */
     void schonerOptionen(SchonerDaten.Optionen opt) {
         if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setSchonerOptionen(opt);
+    }
+
+    /** Main thread: landscape setting updated. */
+    void szeneOrtSetzen(String ort) {
+        if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setOrt(ort);
     }
 
     /** Main thread: screensaver or screen changed (the weather scene pauses). */
@@ -285,12 +292,15 @@ final class TestAnsicht implements OverlayFactory {
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
+            wetterView.setOrt(plugin.szeneOrt());
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             wetterFuellen();
         }
 
         private void schoner(FrameLayout inhalt) {
             Object mo = m.param == null ? null : m.param.get("modus"), uhr = m.param == null ? null : m.param.get("uhr");
+            final String initModus = mo instanceof String ? (String) mo : "live";
+            final String initUhr = uhr instanceof String ? (String) uhr : null;
             wetterView = new WetterView(ctx, new WetterView.Aktionen() {
                 @Override public void zurueck() { plugin.schliessen(); }
                 @Override public boolean pausiert() { return plugin.wetterPausiert(); }
@@ -300,10 +310,191 @@ final class TestAnsicht implements OverlayFactory {
                     gefuellt = true;
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
-            }, th, plugin.schonerOptionen(), mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), true);
+            }, th, plugin.schonerOptionen(), initModus, initUhr, plugin.sternbildNamen(), true);
+            wetterView.setOrt(plugin.szeneOrt());
             wetterView.setSchoner(plugin.schonerZustand());
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            View panel = vorschauLeiste(initModus, initUhr);
+            FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+            int mg = th.px(16);
+            plp.setMargins(mg, mg, mg, mg);
+            inhalt.addView(panel, plp);
+            wetterView.setTapAktion(() -> panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
             wetterFuellen();
+        }
+
+        /** Interactive floating glass control panel for the screensaver preview (landscape, time & weather). */
+        private View vorschauLeiste(String initModus, String initUhr) {
+            final String[] ortKeys = {"auto", "meer", "tal", "see", "lichtung", "gipfel", "felder"};
+            final String[] ortLabels = {"Auto", "Meer", "Tal", "See", "Lichtung", "Gipfel", "Felder"};
+            final String[] wxKeys = {"live", "sunny", "partlycloudy", "cloudy", "rainy", "pouring", "lightning-rainy", "snowy", "snowy-rainy", "hail", "fog", "windy", "clear-night"};
+            final String[] wxLabels = {"Live", "Sonnig", "Leicht bew.", "Bewölkt", "Regen", "Starkregen", "Gewitter", "Schnee", "Schneeregen", "Hagel", "Nebel", "Windig", "Klar"};
+            final String[] zeitKeys = {"live", "06:30", "13:00", "18:30", "23:00", "zeitraffer"};
+            final String[] zeitLabels = {"Live", "Morgen", "Tag", "Abend", "Nacht", "Zeitraffer"};
+
+            final String[] cur = {initModus, initUhr, plugin.szeneOrt(), "live"}; // {modus, uhr, ort, cond}
+            final TextView[] ortBtns = new TextView[ortKeys.length];
+            final TextView[] zeitBtns = new TextView[zeitKeys.length];
+            final TextView[] wxBtns = new TextView[wxKeys.length];
+
+            LinearLayout box = new LinearLayout(ctx);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setClickable(true);
+            box.setPadding(th.px(14), th.px(12), th.px(14), th.px(12));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0xD90E1620);
+            bg.setCornerRadius(th.px(18));
+            bg.setStroke(Math.max(1, th.px(1)), 0x2AFFFFFF);
+            box.setBackground(bg);
+
+            final TextView uhrWert = new TextView(ctx);
+            th.styleText(uhrWert, 14, 600, "onSurface");
+            uhrWert.setText("live".equals(initModus) ? "Live" : ("zeitraffer".equals(initModus) ? "24h" : (initUhr != null ? initUhr : "Live")));
+
+            final Runnable anwenden = () -> {
+                if (wetterView != null) wetterView.setVorschau(cur[0], cur[1], cur[2], cur[3]);
+                for (int i = 0; i < ortKeys.length; i++) pillStil(ortBtns[i], ortKeys[i].equals(cur[2]));
+                for (int i = 0; i < wxKeys.length; i++) pillStil(wxBtns[i], wxKeys[i].equals(cur[3]));
+                for (int i = 0; i < zeitKeys.length; i++) {
+                    boolean ak = ("live".equals(zeitKeys[i]) && "live".equals(cur[0]))
+                        || ("zeitraffer".equals(zeitKeys[i]) && "zeitraffer".equals(cur[0]))
+                        || ("fest".equals(cur[0]) && zeitKeys[i].equals(cur[1]));
+                    pillStil(zeitBtns[i], ak);
+                }
+                uhrWert.setText("live".equals(cur[0]) ? "Live" : ("zeitraffer".equals(cur[0]) ? "24h" : (cur[1] != null ? cur[1] : "Live")));
+            };
+
+            // Row 1: Landscapes + Close button
+            LinearLayout r1 = new LinearLayout(ctx);
+            r1.setOrientation(LinearLayout.HORIZONTAL);
+            r1.setGravity(Gravity.CENTER_VERTICAL);
+            TextView l1 = zeilenLabel("Ort");
+            r1.addView(l1);
+            HorizontalScrollView sOrt = new HorizontalScrollView(ctx);
+            sOrt.setHorizontalScrollBarEnabled(false);
+            LinearLayout pOrt = new LinearLayout(ctx);
+            pOrt.setOrientation(LinearLayout.HORIZONTAL);
+            for (int i = 0; i < ortKeys.length; i++) {
+                final String k = ortKeys[i];
+                TextView b = pill(ortLabels[i]);
+                b.setOnClickListener(v -> sicher(() -> { cur[2] = k; anwenden.run(); }));
+                ortBtns[i] = b;
+                pOrt.addView(b, pillLp());
+            }
+            sOrt.addView(pOrt);
+            r1.addView(sOrt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView zu = pill("Schließen");
+            pillStil(zu, true);
+            zu.setOnClickListener(v -> sicher(plugin::schliessen));
+            LinearLayout.LayoutParams zlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            zlp.leftMargin = th.px(8);
+            r1.addView(zu, zlp);
+            box.addView(r1);
+
+            // Row 2: Time presets + 00:00..23:55 SeekBar
+            LinearLayout r2 = new LinearLayout(ctx);
+            r2.setOrientation(LinearLayout.HORIZONTAL);
+            r2.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams r2lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            r2lp.topMargin = th.px(8);
+            r2.addView(zeilenLabel("Zeit"));
+            SeekBar seek = new SeekBar(ctx);
+            seek.setMax(287);   // 5-minute steps: 00:00 .. 23:55
+            seek.setProgress(12 * 12);
+            for (int i = 0; i < zeitKeys.length; i++) {
+                final String k = zeitKeys[i];
+                TextView b = pill(zeitLabels[i]);
+                b.setOnClickListener(v -> sicher(() -> {
+                    if ("live".equals(k)) { cur[0] = "live"; cur[1] = null; }
+                    else if ("zeitraffer".equals(k)) { cur[0] = "zeitraffer"; cur[1] = null; }
+                    else {
+                        cur[0] = "fest"; cur[1] = k;
+                        String[] hp = k.split(":");
+                        seek.setProgress(Integer.parseInt(hp[0]) * 12 + Integer.parseInt(hp[1]) / 5);
+                    }
+                    anwenden.run();
+                }));
+                zeitBtns[i] = b;
+                r2.addView(b, pillLp());
+            }
+            seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar sb, int prog, boolean fromUser) {
+                    if (!fromUser) return;
+                    sicher(() -> {
+                        int min = prog * 5;
+                        cur[0] = "fest";
+                        cur[1] = String.format(Locale.ROOT, "%02d:%02d", min / 60, min % 60);
+                        anwenden.run();
+                    });
+                }
+                @Override public void onStartTrackingTouch(SeekBar sb) {}
+                @Override public void onStopTrackingTouch(SeekBar sb) {}
+            });
+            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            slp.leftMargin = th.px(6);
+            slp.rightMargin = th.px(8);
+            r2.addView(seek, slp);
+            r2.addView(uhrWert);
+            box.addView(r2, r2lp);
+
+            // Row 3: Weather conditions
+            LinearLayout r3 = new LinearLayout(ctx);
+            r3.setOrientation(LinearLayout.HORIZONTAL);
+            r3.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams r3lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            r3lp.topMargin = th.px(8);
+            r3.addView(zeilenLabel("Wetter"));
+            HorizontalScrollView sWx = new HorizontalScrollView(ctx);
+            sWx.setHorizontalScrollBarEnabled(false);
+            LinearLayout pWx = new LinearLayout(ctx);
+            pWx.setOrientation(LinearLayout.HORIZONTAL);
+            for (int i = 0; i < wxKeys.length; i++) {
+                final String k = wxKeys[i];
+                TextView b = pill(wxLabels[i]);
+                b.setOnClickListener(v -> sicher(() -> { cur[3] = k; anwenden.run(); }));
+                wxBtns[i] = b;
+                pWx.addView(b, pillLp());
+            }
+            sWx.addView(pWx);
+            r3.addView(sWx, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            box.addView(r3, r3lp);
+
+            anwenden.run();
+            return box;
+        }
+
+        private TextView zeilenLabel(String s) {
+            TextView t = new TextView(ctx);
+            t.setText(s);
+            t.setTextSize(13);
+            t.setTextColor(0xFFA8B4C2);
+            t.setMinWidth(th.px(54));
+            return t;
+        }
+
+        private TextView pill(String label) {
+            TextView b = new TextView(ctx);
+            b.setText(label);
+            b.setTextSize(13);
+            b.setSingleLine(true);
+            b.setPadding(th.px(11), th.px(5), th.px(11), th.px(5));
+            pillStil(b, false);
+            return b;
+        }
+
+        private void pillStil(TextView b, boolean aktiv) {
+            if (b == null) return;
+            GradientDrawable d = new GradientDrawable();
+            d.setCornerRadius(th.px(14));
+            d.setColor(aktiv ? 0xFF4D6FA8 : 0x26FFFFFF);
+            b.setBackground(d);
+            b.setTextColor(aktiv ? 0xFFFFFFFF : 0xFFE2E8EE);
+        }
+
+        private LinearLayout.LayoutParams pillLp() {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.rightMargin = th.px(6);
+            return lp;
         }
 
         void wetterFuellen() {

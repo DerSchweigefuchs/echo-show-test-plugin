@@ -23,7 +23,6 @@ import me.jxl.kiosk.plugins.KsTheme;
 final class SchonerUi {
     private static final int TXT = 0xFFECEBE8, SUB = 0xFFC3CCD5, SUB_HELL = 0xFFE2E8EE, ACC = 0xFFA99CF0;
     private static final int GLAS = 0x9E0E1620, RAND = 0x18FFFFFF;
-    private static final float[][] SHIFT = {{0, 0}, {5, 4}, {0, 8}, {-5, 4}};
 
     private final KsTheme theme;
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -97,11 +96,6 @@ final class SchonerUi {
             c.restore();
         }
 
-        // Slow burn-in pixel shift (a few px every 10 minutes, complementing KS's own pixel shift)
-        float[] off = SHIFT[(int) ((System.currentTimeMillis() / 600_000L) % SHIFT.length)];
-        c.save();
-        c.translate(off[0], off[1]);
-
         long sek = simZeit / 1000L;
         if (sek != letzteSek) {
             letzteSek = sek;
@@ -171,8 +165,6 @@ final class SchonerUi {
         if (opt.musik && zustand != null && zustand.musik != null) {
             musikZeichnen(c, 26, h - 24 - 68, t, zustand.musik);
         }
-
-        c.restore();
     }
 
     private void karteZeichnen(Canvas c, float x, float y, float w, float h, SchonerDaten.Hinweis hi, long jetzt) {

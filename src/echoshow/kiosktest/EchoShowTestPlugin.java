@@ -58,6 +58,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile String personen = "alle";
     private volatile boolean verlaufCache = true;
     private volatile String wetterEntity = "";
+    private volatile String szeneOrt = "auto";
     private volatile boolean sternbildNamen = true;
     private volatile int wetterFps = 30;
     private volatile SchonerDaten.Optionen schonerOpt = new SchonerDaten.Optionen();
@@ -128,6 +129,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboAbgleichen();
         personenAbgleichen();
         wetterEntity = text(s.get("wetterEntity"), "");
+        String ortCfg = text(s.get("szeneOrt"), "täglich wechseln").toLowerCase(Locale.ROOT);
+        szeneOrt = "täglich wechseln".equals(ortCfg) ? "auto" : ortCfg;
         sternbildNamen = !Boolean.FALSE.equals(s.get("sternbildNamen"));
         wetterFps = "24".equals(s.get("wetterFps")) ? 24 : 30;
         wetterAbgleichen();
@@ -144,6 +147,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         schonerMusikAusschluss = text(s.get("schonerMusikAusschluss"), "");
         schonerAbgleichen();
         schonerOptionenMelden(opt);
+        szeneOrtMelden(szeneOrt);
         status();
     }
 
@@ -579,6 +583,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             }, theme, schonerOpt, "live", null, sternbildNamen, false);
             WetterLage.Daten wd = wetterDaten;
             if (wd != null) v.setDaten(wd);
+            v.setOrt(szeneOrt);
             v.setSchoner(schonerZustand);
             synchronized (EchoShowTestPlugin.this) { schonerView = v; }
             return v;
@@ -672,9 +677,22 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.schonerOptionen(opt)));
     }
 
+    private void szeneOrtMelden(String ort) {
+        WetterView sv;
+        TestAnsicht a;
+        synchronized (this) {
+            sv = schonerView;
+            a = aktuell != null && ("wetter".equals(aktuell.m.ansicht) || "schoner".equals(aktuell.m.ansicht)) ? aktuell : null;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setOrt(ort)));
+        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.szeneOrtSetzen(ort)));
+    }
+
     boolean wetterPausiert() { return schonerAktiv || bildschirmAus; }
 
     boolean schonerPausiert() { return bildschirmAus; }
+
+    String szeneOrt() { return szeneOrt; }
 
     SchonerDaten.Optionen schonerOptionen() { return schonerOpt; }
 
