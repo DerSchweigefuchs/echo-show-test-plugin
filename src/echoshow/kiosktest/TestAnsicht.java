@@ -321,7 +321,7 @@ final class TestAnsicht implements OverlayFactory {
             }, th, plugin.schonerOptionen(), initModus, initUhr, plugin.sternbildNamen(), true);
             wetterView.setOrt(plugin.szeneOrt());
             wetterView.setSchoner(plugin.schonerZustand());
-            inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            inhalt.addView(wetterView.mitVordergrund(ctx), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             View panel = vorschauLeiste(initModus, initUhr);
             FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
             int mg = th.px(16);

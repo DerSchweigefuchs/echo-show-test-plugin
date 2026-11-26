@@ -625,12 +625,12 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
             v.setSchoner(schonerZustand);
             synchronized (EchoShowTestPlugin.this) { schonerView = v; }
-            return v;
+            return v.mitVordergrund(ctx);
         }
 
         @Override public void onDestroy(View view) {
             synchronized (EchoShowTestPlugin.this) {
-                if (schonerView == view) schonerView = null;
+                if (schonerView != null && (schonerView == view || schonerView == view.getTag())) schonerView = null;
             }
         }
     };

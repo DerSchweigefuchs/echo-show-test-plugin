@@ -23,6 +23,8 @@ import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import java.io.FileInputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -188,6 +190,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private volatile String ortWahl = "auto";
     private String ort = "meer", testCond, vorschauZeit;
     private Runnable tapAktion;
+    private VorneView vorne;
     private int tagNrAktuell;
     private int monat = Calendar.getInstance().get(Calendar.MONTH);
     String mess1 = "", mess2 = "";
@@ -203,7 +206,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     // colours and shaders of the light (rebuilt when the sun moved by 0.05 deg)
     private String himmelKey = "";
-    private Shader himmelShader, sonnenShader, deckTag, deckNacht, deckBlau, meerShader, dunkelShader, dunstHorizont;
+    private Shader himmelShader, sonnenShader, deckShader, deckBlau, meerShader, dunkelShader, dunstHorizont;
     private Shader inselShader, turmShader, rotShader, treibShader, strandShader, nassShader, welleShader, bankLShader, dueneShader;
     private final Shader[] holzShader = new Shader[5];
     private LightingColorFilter[] wolkenFilter = new LightingColorFilter[0];
@@ -571,15 +574,31 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         figurSchonDa = E.figur != null;
     }
 
+    /**
+     * Wraps this view in a two-layer FrameLayout for silky 60 fps precipitation on low-end GPUs:
+     * this view caches the heavy background (sky, clouds, landscape, figure) in a GPU hardware layer
+     * updated at calm 12-15 fps, while the transparent VorneView draws only rain/snow/wind + UI at 60 fps.
+     */
+    FrameLayout mitVordergrund(Context ctx) {
+        FrameLayout box = new FrameLayout(ctx);
+        box.setTag(this);
+        vorne = new VorneView(ctx);
+        box.addView(this, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        box.addView(vorne, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        return box;
+    }
+
     /** New screensaver hints / music snapshot (main thread). */
     void setSchoner(SchonerDaten.Zustand z) {
         schonerZustand = z;
-        invalidate();
+        if (vorne != null) vorne.invalidate();
+        else invalidate();
     }
 
     /** Updated screensaver settings (main thread). */
     void setSchonerOptionen(SchonerDaten.Optionen o) {
         schonerOpt = o != null ? o : new SchonerDaten.Optionen();
+        if (vorne != null) vorne.invalidate();
         invalidate();
     }
 
@@ -629,6 +648,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         momentUm = -1;
         himmelKey = "";
+        if (vorne != null) vorne.invalidate();
         invalidate();
     }
 
@@ -662,6 +682,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         momentUm = -1;
         himmelKey = "";
+        if (vorne != null) vorne.invalidate();
         invalidate();
     }
 
@@ -691,6 +712,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             tZeilen = WetterLage.zeilen(d);
         }
         momentUm = -1;
+        if (vorne != null) vorne.invalidate();
         invalidate();
     }
 
@@ -700,7 +722,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     }
 
     /** The screensaver or the screen changed: start or stop the loop. */
-    void pauseGeaendert() { schleife(); }
+    void pauseGeaendert() {
+        schleife();
+        if (vorne != null) vorne.schleife();
+    }
 
     // ---- loop ---------------------------------------------------------------------------------------------------------
 
@@ -739,12 +764,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         if (soll) {
             E.aktiv++;
             haupt().removeCallbacks(FREIGABE);
+            if (vorne != null) setLayerType(LAYER_TYPE_HARDWARE, null);
             letzterFrame = 0;
             letzteZeichnung = 0;
             vsyncZaehler = 0;
             ch.postFrameCallback(this);
         } else {
             ch.removeFrameCallback(this);
+            if (vorne != null) setLayerType(LAYER_TYPE_NONE, null);
             E.aktiv = Math.max(0, E.aktiv - 1);
             if (E.aktiv == 0) {
                 haupt().removeCallbacks(FREIGABE);
@@ -758,10 +785,15 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         int ziel;
         if (!schoner) {
             ziel = basisFps;
+        } else if (vorne != null) {
+            // Background cached in GPU hardware layer: calm 12-15 fps is plenty for drifting clouds/lighthouse/surf,
+            // while VorneView animates rain/snow/hail/wind at full 60 fps on top of the cached texture!
+            SchonerDaten.Optionen o = schonerOpt;
+            ziel = o != null ? o.ruhigFps : 15;
         } else {
             boolean bewegt = lage.tropfen > 0 || lage.flocken > 0 || lage.hagel > 0 || lage.wind || lage.blitz;
             SchonerDaten.Optionen o = schonerOpt;
-            ziel = bewegt ? (o != null ? o.wetterFps : 60) : (o != null ? o.ruhigFps : 12);
+            ziel = bewegt ? (o != null ? o.wetterFps : 60) : (o != null ? o.ruhigFps : 15);
         }
         return Math.max(1, Math.min(6, Math.round(60f / Math.max(10, Math.min(60, ziel)))));
     }
@@ -991,15 +1023,18 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         ebenen(anim);
 
         float szeneH = schoner ? viewH : UNTEN;
-        c.drawColor(0xFF0D1720);
+        if (!schoner) c.drawColor(0xFF0D1720);
         c.save();
         c.translate(dx, dy);
         c.scale(skala, skala);
         c.save();
         c.clipRect(0, 0, W, szeneH);
-        mitShader(himmelShader);
-        c.drawRect(0, 0, W, szeneH, p);
-        p.setShader(null);
+        // Skip sky fill when an opaque cover>=1 cloud deck already covers the sky (saves 1M+ shaded pixels/frame on GPU)
+        if (deckShader == null) {
+            mitShader(himmelShader);
+            c.drawRect(0, 0, W, szeneH, p);
+            p.setShader(null);
+        }
         sonne(c, t);
         sternenhimmel(c, t);
         mondZeichnen(c);
@@ -1035,10 +1070,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             p.setShader(null);
         }
         c.restore();
-        niederschlag(c, t);
+        if (vorne == null) niederschlag(c, t);
         c.restore();
         if (schoner && schonerUi != null) {
-            schonerUi.zeichnen(c, W, viewH, simZeit, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
+            if (vorne == null) schonerUi.zeichnen(c, W, viewH, simZeit, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
         } else {
             kopf(c);
             anzeigen(c);
@@ -1367,10 +1402,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         deckBlau = "cloudy".equals(lage.cond) ? new LinearGradient(0, 0, 0, deckH,
             new int[] {WetterLage.tont(0xFF76A9DB, 0, L), WetterLage.tont(0xFFA9C7E6, deckH * .55f, L), WetterLage.tont(0xFFD4DEE9, deckH, L)}, new float[] {0, .55f, 1}, Shader.TileMode.CLAMP) : null;
         if (lage.cover >= 1) {
-            deckTag = new LinearGradient(0, 0, 0, deckH, WetterLage.tont(WetterLage.mix(wt[1], wt[2], .45f), 0, L), WetterLage.tont(wt[3], deckH, L), Shader.TileMode.CLAMP);
-            deckNacht = new LinearGradient(0, 0, 0, deckH, WetterLage.tont(WetterLage.mix(wn[1], wn[2], .45f), 0, L), WetterLage.tont(wn[3], deckH, L), Shader.TileMode.CLAMP);
+            int topC = WetterLage.tont(WetterLage.mix(WetterLage.mix(wn[1], wn[2], .45f), WetterLage.mix(wt[1], wt[2], .45f), L.tag), 0, L);
+            int botC = WetterLage.tont(WetterLage.mix(wn[3], wt[3], L.tag), deckH, L);
+            deckShader = new LinearGradient(0, 0, 0, deckH, topC, botC, Shader.TileMode.CLAMP);
         } else {
-            deckTag = deckNacht = null;
+            deckShader = null;
         }
         // subtle horizon atmospheric haze right above the sea
         int hazeCol = WetterLage.tont(L.himmel[2], hz, L);
@@ -1590,11 +1626,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             p.setAlpha(Math.round(255 * tag));
             c.drawRect(0, 0, W, deckH, p);
         }
-        if (deckNacht != null) {
-            mitShader(deckNacht);
-            c.drawRect(0, 0, W, deckH, p);
-            p.setShader(deckTag);
-            p.setAlpha(Math.round(255 * tag));
+        if (deckShader != null) {
+            mitShader(deckShader);
             c.drawRect(0, 0, W, deckH, p);
         }
         p.setShader(null);
@@ -2327,5 +2360,101 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private static int tagNummer() {
         long ms = System.currentTimeMillis();
         return (int) Math.floor((ms + Calendar.getInstance().getTimeZone().getOffset(ms)) / 864e5);
+    }
+
+    /**
+     * Lightweight transparent foreground view that draws ONLY precipitation (rain, snow, hail, fog, wind gusts, leaves)
+     * and the screensaver UI at full 60 fps VSync while the heavy sky/cloud/landscape background sits cached in a GPU
+     * hardware layer on WetterView.
+     */
+    private final class VorneView extends View implements Choreographer.FrameCallback {
+        private boolean vLaeuft, vAngehaengt, vSichtbar = true;
+        private long vFrameNs;
+        private int vTick;
+
+        VorneView(Context ctx) {
+            super(ctx);
+            setClickable(false);
+        }
+
+        @Override protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            vAngehaengt = true;
+            schleife();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            vAngehaengt = false;
+            schleife();
+            super.onDetachedFromWindow();
+        }
+
+        @Override protected void onWindowVisibilityChanged(int v) {
+            super.onWindowVisibilityChanged(v);
+            vSichtbar = v == VISIBLE;
+            schleife();
+        }
+
+        @Override public void onVisibilityAggregated(boolean sichtbar) {
+            super.onVisibilityAggregated(sichtbar);
+            schleife();
+        }
+
+        void schleife() {
+            boolean soll = vAngehaengt && vSichtbar && isShown() && !aktionen.pausiert();
+            if (soll == vLaeuft) return;
+            vLaeuft = soll;
+            Choreographer ch = Choreographer.getInstance();
+            if (soll) {
+                vTick = 0;
+                ch.postFrameCallback(this);
+            } else {
+                ch.removeFrameCallback(this);
+            }
+        }
+
+        private int teiler() {
+            boolean bewegt = lage.tropfen > 0 || lage.flocken > 0 || lage.hagel > 0 || lage.wind;
+            if (bewegt) {
+                SchonerDaten.Optionen o = schonerOpt;
+                int ziel = o != null ? o.wetterFps : 60;
+                return Math.max(1, Math.min(3, Math.round(60f / Math.max(20, Math.min(60, ziel)))));
+            }
+            SchonerDaten.Optionen o = schonerOpt;
+            SchonerDaten.Zustand z = schonerZustand;
+            if (o != null && o.musik && z != null && z.musik != null) return 4;   // 15 fps for music equalizer
+            if (lage.nebel) return 4;                                              // 15 fps for slow fog drift
+            return 30;                                                             // 2 fps when completely calm (clock ticks cleanly)
+        }
+
+        @Override public void doFrame(long ns) {
+            if (!vLaeuft) return;
+            if (startNs == 0) startNs = ns;
+            int tl = teiler();
+            if (vTick == 0 || (vTick % tl) == 0) {
+                vFrameNs = ns;
+                invalidate();
+            }
+            vTick++;
+            Choreographer.getInstance().postFrameCallback(this);
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            if (skala <= 0 || licht == null) return;
+            try {
+                float t = vFrameNs > 0 && startNs > 0 ? (float) ((vFrameNs - startNs) * 1e-9) : SystemClock.uptimeMillis() / 1000f;
+                c.save();
+                c.translate(dx, dy);
+                c.scale(skala, skala);
+                niederschlag(c, t);
+                if (schoner && schonerUi != null) {
+                    long zt = "live".equals(modus) ? System.currentTimeMillis() : simZeit;
+                    schonerUi.zeichnen(c, W, viewH, zt, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
+                }
+                c.restore();
+            } catch (RuntimeException ignored) {
+                // never crash the host app on a drawing error
+            }
+        }
     }
 }

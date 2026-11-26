@@ -76,8 +76,16 @@ final class SchonerUi {
         t.setTypeface(tf);
         t.setTextSize(size);
         t.setColor(color);
-        if (schatten) t.setShadowLayer(10, 0, 2, 0x6B000000);
         return t;
+    }
+
+    /** Crisp zero-blur drop shadow: avoids Android 7.1 HWUI's expensive per-frame CPU Gaussian shadow blur on large text. */
+    private static void drawTextShadow(Canvas c, String s, float x, float y, Paint pt, float dy) {
+        int col = pt.getColor();
+        pt.setColor(0x52000000);
+        c.drawText(s, x, y + dy, pt);
+        pt.setColor(col);
+        c.drawText(s, x, y, pt);
     }
 
     private static void setSpacing(Paint t, float ls) {
@@ -117,10 +125,10 @@ final class SchonerUi {
             float baseUhr = opt.uhrGross ? 154f : 114f;
             uhrP.setTextSize(sz);
             setSpacing(uhrP, (opt.uhrGross ? -5f : -3f) / sz);
-            c.drawText(tUhr, xUhr, baseUhr, uhrP);
+            drawTextShadow(c, tUhr, xUhr, baseUhr, uhrP, 2.5f);
             if (opt.sekunden) {
                 sekP.setTextSize(sz * .42f);
-                c.drawText(tSek, xUhr + uhrP.measureText(tUhr) + 4, baseUhr, sekP);
+                drawTextShadow(c, tSek, xUhr + uhrP.measureText(tUhr) + 4, baseUhr, sekP, 2f);
             }
             yDatum = opt.uhrGross ? 208f : 158f;
             yWetter = opt.datum ? (opt.uhrGross ? 248f : 196f) : (opt.uhrGross ? 208f : 158f);
@@ -130,7 +138,7 @@ final class SchonerUi {
         }
 
         if (opt.datum) {
-            c.drawText(tDatum, 54, yDatum, datumP);
+            drawTextShadow(c, tDatum, 54, yDatum, datumP, 1.5f);
         }
 
         if (opt.wetter && wx != null) {
@@ -140,13 +148,13 @@ final class SchonerUi {
             x += 32;
             if (wx.temp != null) {
                 String tp = Math.round(wx.temp) + "°";
-                c.drawText(tp, x, yWetter, wxFettP);
+                drawTextShadow(c, tp, x, yWetter, wxFettP, 1.4f);
                 x += wxFettP.measureText(tp) + 6;
             }
             String hinweis = WetterLage.schonerHinweis(wx, lage);
             String rest = lage.name() + (hinweis.isEmpty() ? "" : ", " + hinweis);
             wxP.setColor(tag > .45f ? SUB_HELL : SUB);
-            c.drawText(rest, x, yWetter, wxP);
+            drawTextShadow(c, rest, x, yWetter, wxP, 1.4f);
         }
 
         // ---- top right: up to 2 hint cards + "+N weitere" ----
