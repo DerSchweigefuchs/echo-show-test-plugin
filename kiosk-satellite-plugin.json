@@ -3,7 +3,7 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
@@ -318,11 +318,11 @@
   "commands": [
     {
       "id": "zeigen",
-      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter, schoner, morgen)"
+      "title": "Ansicht zeigen (Link: wetter, schoner, morgen, …)"
     },
     {
       "id": "morgen",
-      "title": "Mein Tag öffnen (Link: morgen, morgen/demo, morgen/story)"
+      "title": "Mein Tag öffnen (morgen, morgen/demo, morgen/story)"
     },
     {
       "id": "kalender",
