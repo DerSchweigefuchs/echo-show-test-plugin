@@ -1,11 +1,17 @@
 package echoshow.kiosktest;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Debug;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.View;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Collections;
@@ -15,6 +21,8 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import me.jxl.kiosk.plugins.KioskPlugin;
 import me.jxl.kiosk.plugins.KsTheme;
 import me.jxl.kiosk.plugins.OverlayFactory;
@@ -78,6 +86,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private List<SchonerDaten.Hinweis> schonerWarnungen = Collections.emptyList();
     private SchonerDaten.Musik schonerMusik;
     private volatile SchonerDaten.Zustand schonerZustand = new SchonerDaten.Zustand();
+    private volatile String haBasisUrl = "", coverGeladenUrl = "", coverLadeUrl = "";
+    private volatile Bitmap coverBitmap;
+    private ExecutorService coverLader;
     private WetterView schonerView;   // active KS native screensaver view, guarded by this
 
     // presence data (worker thread writes, views read immutable snapshots)
@@ -222,6 +233,14 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboWetter.stop();
         aboSchonerNotif.stop();
         aboSchonerInfo.stop();
+        ExecutorService cl;
+        synchronized (this) {
+            cl = coverLader;
+            coverLader = null;
+        }
+        if (cl != null) cl.shutdownNow();
+        coverGeladenUrl = coverLadeUrl = "";
+        coverBitmap = null;
         try {
             WetterView.beenden();   // end the layer build thread, give the weather bitmaps back
         } catch (RuntimeException | LinkageError ignored) {
@@ -537,6 +556,15 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                     pauseMelden();
                 }
             });
+            h.executeCommand("getDashboardState", Collections.<String, Object>emptyMap(), (ok, data, error) -> {
+                if (ok && data instanceof Map) {
+                    Object u = ((Map<?, ?>) data).get("homeAssistantUrl");
+                    if (u instanceof String && !((String) u).trim().isEmpty()) {
+                        haBasisUrl = ((String) u).trim().replaceAll("/+$", "");
+                        coverNachladen();
+                    }
+                }
+            });
         } catch (RuntimeException ignored) {
             // without host.read the scene only pauses when its view is hidden
         }
@@ -655,14 +683,171 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             return;
         }
         SchonerDaten.Zustand z;
+        String neuerCoverUrl = "";
         synchronized (schonerLock) {
             @SuppressWarnings("unchecked")
             List<SchonerDaten.Hinweis> w = (List<SchonerDaten.Hinweis>) res[0];
             schonerWarnungen = w;
-            schonerMusik = (SchonerDaten.Musik) res[1];
+            SchonerDaten.Musik m = (SchonerDaten.Musik) res[1];
+            if (m != null && !m.bildUrl.isEmpty()) {
+                if (m.bildUrl.equals(coverGeladenUrl) && coverBitmap != null && !coverBitmap.isRecycled()) {
+                    m.cover = coverBitmap;
+                } else {
+                    neuerCoverUrl = m.bildUrl;
+                }
+            }
+            schonerMusik = m;
             z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
         }
         schonerZustandMelden(z);
+        if (!neuerCoverUrl.isEmpty()) coverStarten(neuerCoverUrl);
+    }
+
+    private void coverNachladen() {
+        String url;
+        synchronized (schonerLock) {
+            url = schonerMusik != null && !schonerMusik.bildUrl.isEmpty() && schonerMusik.cover == null ? schonerMusik.bildUrl : "";
+        }
+        if (!url.isEmpty()) coverStarten(url);
+    }
+
+    private synchronized ExecutorService coverLader() {
+        if (coverLader == null) coverLader = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "schoner-cover");
+            t.setDaemon(true);
+            t.setPriority(Thread.MIN_PRIORITY + 1);
+            return t;
+        });
+        return coverLader;
+    }
+
+    /** Loads the playing track's album cover (HTTP/HTTPS or HA signed path) downsampled to ~128 px on a background thread. */
+    private void coverStarten(final String rohUrl) {
+        if (rohUrl == null || rohUrl.isEmpty() || rohUrl.equals(coverLadeUrl)) return;
+        if (rohUrl.startsWith("http://") || rohUrl.startsWith("https://")) {
+            coverLadeUrl = rohUrl;
+            coverHolen(rohUrl, rohUrl);
+            return;
+        }
+        if (!rohUrl.startsWith("/")) return;
+        final String basis = haBasisUrl;
+        PluginHost h = host;
+        if (basis.isEmpty()) {
+            if (h == null) return;
+            Map<String, Object> msg = new LinkedHashMap<>();
+            msg.put("type", "get_config");
+            try {
+                h.haCall(msg, (ok, data, error) -> {
+                    if (ok && data instanceof Map) {
+                        Map<?, ?> cfg = (Map<?, ?>) data;
+                        Object iu = cfg.get("internal_url"), eu = cfg.get("external_url");
+                        String b = iu instanceof String && !((String) iu).trim().isEmpty() ? (String) iu
+                            : (eu instanceof String && !((String) eu).trim().isEmpty() ? (String) eu : "");
+                        if (!b.isEmpty()) {
+                            haBasisUrl = b.trim().replaceAll("/+$", "");
+                            coverNachladen();
+                        }
+                    }
+                });
+            } catch (RuntimeException ignored) {}
+            return;
+        }
+        coverLadeUrl = rohUrl;
+        if (rohUrl.contains("token=") || rohUrl.contains("authSig=") || rohUrl.startsWith("/local/")) {
+            coverHolen(rohUrl, basis + rohUrl);
+            return;
+        }
+        if (h == null) return;
+        Map<String, Object> sign = new LinkedHashMap<>();
+        sign.put("type", "auth/sign_path");
+        sign.put("path", rohUrl);
+        try {
+            h.haCall(sign, (ok, data, error) -> {
+                String pfad = ok && data instanceof Map && ((Map<?, ?>) data).get("path") instanceof String
+                    ? (String) ((Map<?, ?>) data).get("path") : rohUrl;
+                coverHolen(rohUrl, basis + pfad);
+            });
+        } catch (RuntimeException ignored) {
+            coverHolen(rohUrl, basis + rohUrl);
+        }
+    }
+
+    private void coverHolen(final String rohUrl, final String vollUrl) {
+        try {
+            coverLader().execute(() -> {
+                Bitmap bm = coverDownload(vollUrl);
+                if (bm == null) {
+                    if (rohUrl.equals(coverLadeUrl)) coverLadeUrl = "";
+                    return;
+                }
+                SchonerDaten.Zustand z = null;
+                synchronized (schonerLock) {
+                    if (!rohUrl.equals(coverLadeUrl)) {
+                        bm.recycle();
+                        return;
+                    }
+                    coverGeladenUrl = rohUrl;
+                    coverBitmap = bm;
+                    if (schonerMusik != null && rohUrl.equals(schonerMusik.bildUrl)) {
+                        SchonerDaten.Musik neu = new SchonerDaten.Musik();
+                        neu.titel = schonerMusik.titel;
+                        neu.kuenstler = schonerMusik.kuenstler;
+                        neu.bildUrl = schonerMusik.bildUrl;
+                        neu.cover = bm;
+                        schonerMusik = neu;
+                        z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+                    }
+                }
+                if (z != null) schonerZustandMelden(z);
+            });
+        } catch (RuntimeException ignored) {
+            if (rohUrl.equals(coverLadeUrl)) coverLadeUrl = "";
+        }
+    }
+
+    private static Bitmap coverDownload(String vollUrl) {
+        HttpURLConnection con = null;
+        try {
+            con = (HttpURLConnection) new URL(vollUrl).openConnection();
+            con.setConnectTimeout(4000);
+            con.setReadTimeout(5000);
+            con.setInstanceFollowRedirects(true);
+            if (con.getResponseCode() != 200) return null;
+            byte[] bytes;
+            try (InputStream in = con.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[8192];
+                int n, sum = 0;
+                while ((n = in.read(buf)) > 0) {
+                    sum += n;
+                    if (sum > 2_000_000) return null;   // guard RAM on Echo Show
+                    out.write(buf, 0, n);
+                }
+                bytes = out.toByteArray();
+            }
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null;
+            int sample = 1, maxDim = Math.max(opts.outWidth, opts.outHeight);
+            while (maxDim / (sample * 2) >= 128) sample *= 2;
+            opts.inJustDecodeBounds = false;
+            opts.inSampleSize = sample;
+            Bitmap raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+            if (raw == null) return null;
+            if (raw.getWidth() > 160 || raw.getHeight() > 160) {
+                int s = Math.min(raw.getWidth(), raw.getHeight());
+                Bitmap sq = Bitmap.createBitmap(raw, (raw.getWidth() - s) / 2, (raw.getHeight() - s) / 2, s, s);
+                Bitmap scaled = Bitmap.createScaledBitmap(sq, 128, 128, true);
+                if (sq != raw) sq.recycle();
+                raw.recycle();
+                return scaled;
+            }
+            return raw;
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            if (con != null) con.disconnect();
+        }
     }
 
     private void schonerZustandMelden(SchonerDaten.Zustand z) {

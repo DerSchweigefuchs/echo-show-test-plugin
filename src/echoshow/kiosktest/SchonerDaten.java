@@ -1,5 +1,6 @@
 package echoshow.kiosktest;
 
+import android.graphics.Bitmap;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -50,6 +51,8 @@ final class SchonerDaten {
     static final class Musik {
         String titel = "";
         String kuenstler = "";
+        String bildUrl = "";
+        Bitmap cover;
     }
 
     static final class Zustand {
@@ -87,7 +90,8 @@ final class SchonerDaten {
             + "{%- set ns = namespace(m=none, w=[]) -%}"
             + "{%- for p in states.media_player | selectattr('state', 'eq', 'playing') -%}"
             + "{%- if ns.m is none and p.entity_id not in excl and p.attributes.media_title | default('') -%}"
-            + "{%- set ns.m = {'t': p.attributes.media_title, 'a': p.attributes.media_artist | default(p.attributes.media_album_name | default(''))} -%}"
+            + "{%- set ns.m = {'t': p.attributes.media_title, 'a': p.attributes.media_artist | default(p.attributes.media_album_name | default('')),"
+            + " 'p': p.attributes.entity_picture | default(p.attributes.entity_picture_local | default(''))} -%}"
             + "{%- endif -%}{%- endfor -%}"
             + "{%- for s in states.sensor -%}"
             + "{%- set wc = s.attributes.warning_count | default(0) | int(0) -%}"
@@ -147,6 +151,7 @@ final class SchonerDaten {
                     musik = new Musik();
                     musik.titel = t;
                     musik.kuenstler = str(pm.get("a")).trim();
+                    musik.bildUrl = str(pm.get("p")).trim();
                 }
             }
             if (m.get("w") instanceof List) {

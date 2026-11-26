@@ -1,9 +1,11 @@
 package echoshow.kiosktest;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RadialGradient;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -27,10 +29,12 @@ final class SchonerUi {
     private final KsTheme theme;
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint linie = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint coverP = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint uhrP, sekP, datumP, wxFettP, wxP, kTitelP, kUnterP, mTitelP, mArtP, mehrP;
     private final Shader scrimHell, scrimDunkel;
     private final RectF r = new RectF(), arcR = new RectF();
-    private final Path akzent = new Path();
+    private final Rect coverSrc = new Rect();
+    private final Path akzent = new Path(), coverClip = new Path();
     private final Map<String, Path> iconCache = new HashMap<>();
     private final SimpleDateFormat fmtHm = new SimpleDateFormat("HH:mm", Locale.ROOT);
     private final SimpleDateFormat fmtSec = new SimpleDateFormat(":ss", Locale.ROOT);
@@ -220,11 +224,26 @@ final class SchonerUi {
         linie.setColor(RAND);
         c.drawRoundRect(r, 22, 22, linie);
 
-        // Icon square (52 x 52, radius 14)
+        // Album cover (52 x 52, radius 14, center-cropped) or music icon fallback
         r.set(x + 8, y + 8, x + 60, y + 60);
-        p.setColor(0x14FFFFFF);
-        c.drawRoundRect(r, 14, 14, p);
-        drawIcon(c, "mdi:music", x + 21, y + 21, 26, ACC);
+        Bitmap cov = m.cover;
+        if (cov != null && !cov.isRecycled() && cov.getWidth() > 0 && cov.getHeight() > 0) {
+            int cw = cov.getWidth(), ch = cov.getHeight(), side = Math.min(cw, ch);
+            int sx = (cw - side) / 2, sy = (ch - side) / 2;
+            coverSrc.set(sx, sy, sx + side, sy + side);
+            coverClip.reset();
+            coverClip.addRoundRect(r, 14, 14, Path.Direction.CW);
+            c.save();
+            c.clipPath(coverClip);
+            c.drawBitmap(cov, coverSrc, r, coverP);
+            c.restore();
+            linie.setColor(0x26FFFFFF);
+            c.drawRoundRect(r, 14, 14, linie);
+        } else {
+            p.setColor(0x14FFFFFF);
+            c.drawRoundRect(r, 14, 14, p);
+            drawIcon(c, "mdi:music", x + 21, y + 21, 26, ACC);
+        }
 
         c.drawText(t1, x + 74, y + 31, mTitelP);
         if (!t2.isEmpty()) c.drawText(t2, x + 74, y + 50, mArtP);
