@@ -397,12 +397,26 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             }   // otherwise wetterEreignis fills it in as soon as HA sends the first result
         }
         try {
+            if (!"schoner".equals(ansicht) && (schonerAktiv || bildschirmAus)) {
+                bildschirmAufwecken(h);
+            }
             h.showOverlay(OVERLAY, spec(), a);
         } catch (RuntimeException e) {   // older KS, rate limit or stopped session
             synchronized (this) { if (aktuell == a) aktuell = null; }
             melden(m, "bereit", fehler("Overlay: " + e.getMessage()));
             h.status("Overlay nicht möglich: " + e.getMessage(), true);
         }
+    }
+
+    /** Ask HA echo_show integration to wake the screen and exit KS screensaver before showing any view. */
+    private void bildschirmAufwecken(PluginHost h) {
+        if (h == null) return;
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "echo_show/ansicht/aufwecken");
+        msg.put("dashboard", dashboard);
+        try {
+            h.haCall(msg, (ok, data, err) -> {});
+        } catch (RuntimeException ignored) {}
     }
 
     private OverlaySpec spec() {
