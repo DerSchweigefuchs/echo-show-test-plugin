@@ -72,6 +72,16 @@ final class TestAnsicht implements OverlayFactory {
         else aktiv.kalenderFuellen();
     }
 
+    /** Main thread: screensaver hints / music updated. */
+    void schonerFuellen(SchonerDaten.Zustand z) {
+        if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setSchoner(z);
+    }
+
+    /** Main thread: screensaver settings updated. */
+    void schonerOptionen(SchonerDaten.Optionen opt) {
+        if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setSchonerOptionen(opt);
+    }
+
     /** Main thread: screensaver or screen changed (the weather scene pauses). */
     void pauseGeaendert() {
         if (aktiv != null) aktiv.wetterPause();
@@ -123,12 +133,13 @@ final class TestAnsicht implements OverlayFactory {
             root.setOrientation(LinearLayout.VERTICAL);
             root.setBackgroundColor(th.color("surface"));
             root.setClickable(true);   // touches stay in the test view
-            // the presence page brings its own header (back button, title, switch), like the dashboard page it copies
-            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            // presence, weather and screensaver preview bring their own full-screen layout
+            if (!"anwesenheit".equals(m.ansicht) && !"wetter".equals(m.ansicht) && !"schoner".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
             else if ("wetter".equals(m.ansicht)) wetter(inhalt);
+            else if ("schoner".equals(m.ansicht)) schoner(inhalt);
             else if ("timer".equals(m.ansicht)) timer(inhalt);
             else if ("liste".equals(m.ansicht)) liste(inhalt);
             else kalender(inhalt);
@@ -224,6 +235,7 @@ final class TestAnsicht implements OverlayFactory {
                 case "liste": return "Liste 50 (nativ)";
                 case "anwesenheit": return "Anwesenheit (nativ)";
                 case "wetter": return "Wetter (nativ)";
+                case "schoner": return "Schoner (nativ)";
                 default: return "Kalender (nativ)";
             }
         }
@@ -273,6 +285,23 @@ final class TestAnsicht implements OverlayFactory {
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
+            inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            wetterFuellen();
+        }
+
+        private void schoner(FrameLayout inhalt) {
+            Object mo = m.param == null ? null : m.param.get("modus"), uhr = m.param == null ? null : m.param.get("uhr");
+            wetterView = new WetterView(ctx, new WetterView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public boolean pausiert() { return plugin.wetterPausiert(); }
+                @Override public void fertig(long aufbauMs) {
+                    m.aufbauMs = aufbauMs;
+                    if (gefuellt) return;
+                    gefuellt = true;
+                    if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+                }
+            }, th, plugin.schonerOptionen(), mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), true);
+            wetterView.setSchoner(plugin.schonerZustand());
             inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             wetterFuellen();
         }

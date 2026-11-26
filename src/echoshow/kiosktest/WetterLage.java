@@ -23,9 +23,10 @@ final class WetterLage {
         long aufgang, untergang;          // next_rising / next_setting, ms (0 = unknown)
         Double lat, lon;                  // zone.home, only kept in memory
         long empfangen;                   // System.currentTimeMillis() of this snapshot
+        String stunden = "", woche = "", regen = "";   // input_text.wetter_stunden / woche / regen (for screensaver hint)
     }
 
-    /** The template: weather entity (setting, or the first weather.*), sun.sun and zone.home as one small JSON object. */
+    /** The template: weather entity (setting, or the first weather.*), sun.sun, zone.home and forecast helpers. */
     static Map<String, Object> abo(String entity) {
         String id = entity != null && entity.matches("weather\\.[a-z0-9_]{1,250}") ? entity : "";
         String d = " | default(none)";
@@ -38,7 +39,8 @@ final class WetterLage {
             + ", 'wb': w.attributes.wind_bearing" + d + "} if w else none),"
             + " 'sun': ({'el': s.attributes.elevation" + d + ", 'az': s.attributes.azimuth" + d + ", 'rising': s.attributes.rising" + d
             + ", 'nr': s.attributes.next_rising" + d + ", 'ns': s.attributes.next_setting" + d + "} if s else none),"
-            + " 'home': ({'lat': z.attributes.latitude" + d + ", 'lon': z.attributes.longitude" + d + "} if z else none)} | tojson }}";
+            + " 'home': ({'lat': z.attributes.latitude" + d + ", 'lon': z.attributes.longitude" + d + "} if z else none),"
+            + " 'st': states('input_text.wetter_stunden'), 'wo': states('input_text.wetter_woche'), 'rg': states('input_text.wetter_regen')} | tojson }}";
         Map<String, Object> msg = new LinkedHashMap<>();
         msg.put("type", "render_template");
         msg.put("template", tpl);
@@ -75,7 +77,16 @@ final class WetterLage {
             d.lat = zahl(h.get("lat"));
             d.lon = zahl(h.get("lon"));
         }
+        d.stunden = sauberText(m.get("st"));
+        d.woche = sauberText(m.get("wo"));
+        d.regen = sauberText(m.get("rg"));
         return d;
+    }
+
+    private static String sauberText(Object o) {
+        if (!(o instanceof String)) return "";
+        String s = ((String) o).trim();
+        return "unknown".equals(s) || "unavailable".equals(s) ? "" : s;
     }
 
     private static Double zahl(Object o) {
@@ -472,5 +483,132 @@ final class WetterLage {
         if (a.length() > 0) l.add(a.toString());
         if (d.aufgang > 0 || d.untergang > 0) l.add("Sonne ↑ " + uhr(d.aufgang) + " · ↓ " + uhr(d.untergang));
         return l;
+    }
+
+    /** Material Design Icon name for a weather condition (day or night), matching the screensaver. */
+    static String wetterIcon(String cond, boolean nacht) {
+        if (cond == null) return "mdi:weather-cloudy";
+        switch (cond) {
+            case "clear-night": return "mdi:weather-night";
+            case "sunny": return nacht ? "mdi:weather-night" : "mdi:weather-sunny";
+            case "partlycloudy": return nacht ? "mdi:weather-night-partly-cloudy" : "mdi:weather-partly-cloudy";
+            case "cloudy": return "mdi:weather-cloudy";
+            case "exceptional": return "mdi:alert-circle-outline";
+            case "fog": return "mdi:weather-fog";
+            case "hail": return "mdi:weather-hail";
+            case "lightning": return "mdi:weather-lightning";
+            case "lightning-rainy": return "mdi:weather-lightning-rainy";
+            case "pouring": return "mdi:weather-pouring";
+            case "rainy": return "mdi:weather-rainy";
+            case "snowy": return "mdi:weather-snowy";
+            case "snowy-rainy": return "mdi:weather-snowy-rainy";
+            case "windy": return "mdi:weather-windy";
+            case "windy-variant": return "mdi:weather-windy-variant";
+            default: return "mdi:weather-cloudy";
+        }
+    }
+
+    /** Short screensaver hint: "ab X Uhr trocken" / "Regen ab X Uhr" from wetter_stunden, or today's "↑H° ↓L°" from wetter_woche. */
+    static String schonerHinweis(Daten d, WetterLage lage) {
+        if (d == null) return "";
+        boolean nassJetzt = istNassCond(lage.cond);
+        String hint = "";
+        if (!d.stunden.isEmpty()) {
+            String[] eintraege = d.stunden.split(";");
+            int[] regenProb = regenStunden(d.regen);
+            if (nassJetzt) {
+                int k = -1;
+                for (int i = 0; i < eintraege.length; i++) {
+                    String[] f = eintraege[i].split("\\|", -1);
+                    if (f.length >= 2 && !stundeNass(f, regenProb)) { k = i; break; }
+                }
+                if (k < 0) hint = "noch länger";
+                else {
+                    String[] f = eintraege[k].split("\\|", -1);
+                    hint = "ab " + stundeText(f[0]) + " trocken";
+                }
+            } else {
+                for (int i = 0; i < eintraege.length; i++) {
+                    String[] f = eintraege[i].split("\\|", -1);
+                    if (f.length >= 2 && stundeNass(f, regenProb)) {
+                        hint = nassName(f[1]) + " ab " + stundeText(f[0]);
+                        break;
+                    }
+                }
+            }
+        }
+        if (hint.isEmpty() && !d.woche.isEmpty()) {
+            String[] tage = d.woche.split(";");
+            if (tage.length > 0) {
+                String[] f = tage[0].split("\\|", -1);
+                int heuteWd = (Calendar.getInstance().get(Calendar.DAY_OF_WEEK) + 5) % 7;
+                try {
+                    if (f.length >= 4 && Integer.parseInt(f[0].trim()) == heuteWd) {
+                        hint = "↑" + Math.round(Double.parseDouble(f[2].trim())) + "° ↓" + Math.round(Double.parseDouble(f[3].trim())) + "°";
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return hint;
+    }
+
+    private static boolean istNassCond(String c) {
+        return c != null && (c.contains("rain") || c.contains("pour") || c.contains("snow") || c.contains("hail") || c.contains("lightning"));
+    }
+
+    private static String nassName(String c) {
+        if (c == null) return "Regen";
+        if (c.contains("snow")) return "Schnee";
+        if ("hail".equals(c)) return "Hagel";
+        if (c.contains("lightning")) return "Gewitter";
+        return "Regen";
+    }
+
+    private static String stundeText(String s) {
+        try {
+            int h = Integer.parseInt(s.trim());
+            return h == 0 ? "Mitternacht" : h + " Uhr";
+        } catch (NumberFormatException e) {
+            return s;
+        }
+    }
+
+    private static boolean stundeNass(String[] f, int[] prob) {
+        boolean nass;
+        if (f.length >= 4 && !f[3].trim().isEmpty()) {
+            try { nass = Double.parseDouble(f[3].trim()) >= .1; } catch (NumberFormatException e) { nass = istNassCond(f[1]); }
+        } else {
+            nass = istNassCond(f[1]);
+        }
+        if (!nass) return false;
+        if (prob == null) return true;
+        try {
+            int h = Integer.parseInt(f[0].trim()), jetztH = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+            int idx = (h - jetztH + 24) % 24;
+            if (idx < prob.length && prob[idx] >= 0) return prob[idx] >= 35;
+        } catch (NumberFormatException ignored) {}
+        return true;
+    }
+
+    /** Parses hourly rain probabilities from input_text.wetter_regen ("YYYYMMDDHH|p0,p1,...|..."). */
+    private static int[] regenStunden(String s) {
+        if (s == null || s.isEmpty()) return null;
+        String[] teile = s.split("\\|", -1);
+        if (teile.length < 2 || teile[0].length() < 10) return null;
+        try {
+            int startH = Integer.parseInt(teile[0].substring(8, 10));
+            String[] vs = teile[1].split(",");
+            int[] out = new int[24];
+            java.util.Arrays.fill(out, -1);
+            int jetztH = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+            int off = (jetztH - startH + 24) % 24;
+            for (int i = 0; i < 24 && off + i < vs.length; i++) {
+                String v = vs[off + i].trim();
+                if (!v.isEmpty()) out[i] = Integer.parseInt(v);
+            }
+            return out;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 }

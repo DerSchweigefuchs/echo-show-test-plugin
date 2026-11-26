@@ -3,7 +3,7 @@
 Prototyp zum Messen: Laufen native Android-Ansichten auf einem Echo Show schneller und sparsamer als Lovelace-Seiten?
 
 ## Was es kann
-Fünf native Vollbild-Ansichten über dem Dashboard:
+Fünf native Vollbild-Ansichten über dem Dashboard plus ein nativer Kiosk-Satellite-Bildschirmschoner:
 
 | Ansicht | Inhalt |
 |---|---|
@@ -12,6 +12,7 @@ Fünf native Vollbild-Ansichten über dem Dashboard:
 | `liste` | 50 Zeilen mit Auto-Scroll als Lasttest |
 | `anwesenheit` | Nachbau einer Lovelace-Anwesenheitsseite als schwerer Vergleichstest: Personenkarten, Zeitleiste 0–24 Uhr und Woche, auf einem Canvas gezeichnet |
 | `wetter` | Live-Wetterszene am Meer: Himmel nach der echten Sonnenhöhe, Sonne, Mond, Sterne, ziehende Wolken, Regen und Schnee, auf einem Canvas gezeichnet |
+| `schoner` | Vollbild-Vorschau des nativen Bildschirmschoners „Wetterszene“ (oder direkt in Kiosk Satellite unter **Screensaver → Screensaver mode → Wetterszene (Echo Show Test-Ansichten)** auswählbar) |
 
 In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwischen Titel und Umschalter, bei `wetter` unter der Szene):
 - Öffnungszeit
@@ -43,12 +44,19 @@ In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwis
 - Last: Himmel, Meer, Land und Kopfzeile werden direkt aus einmal angelegten Pfaden gezeichnet, ohne Bitmaps. Nur die Wolkenreihen und der Mond sind Bitmaps. Jede Wolkenreihe hat die Auflösung, die ihre Unschärfe zulässt, und nur den Streifen, den sie belegt (mit Rand gegen Abschneiden), nahtlos gekachelt über `BitmapShader`, in den Farben des aktuellen Lichts. Zusammen sind das etwa 0,2 bis 1,3 MB. Die Wolken werden im Hintergrund gebaut und blenden ein; das erste Bild kommt sofort. Alle offenen Ansichten teilen sich die Ebenen. Sie werden 30 s nach dem Schließen oder Pausieren freigegeben. Die Szene läuft mit 30 oder 24 fps und pausiert samt Bildzähler, solange sie nicht sichtbar ist, der Bildschirmschoner läuft (auch wenn er beim Start schon aktiv war) oder der Bildschirm aus ist.
 - `gezeigt` kommt mit dem ersten Bild, `bereit`, sobald die Wolken eingeblendet sind. `bereit` enthält `daten_ms`, `aufbau_ms`, `daten_cache`, `zustand` und `modus` und die eigenen Messwerte der Szene: `szene_fps`, `frame_median_ms`, `frame_p95_ms` (Zeichenzeit pro Bild), `ruckler`, `cpu_prozess_pct` (ganzer Prozess aus `/proc/self/stat`, in Prozent eines Kerns), `cpu_haupt_pct` (Hauptthread), `cpu_kerne`, `bitmap_kb` und `figur_kb`. Weil `bereit` schon in der ersten Sekunde kommt, gelten fps und CPU dort für die Zeit seit dem ersten Bild (`messfenster`). Die Werte über volle Sekunden stehen 5 s später im Plugin-Status. Ist `/proc/self/stat` nicht lesbar, steht der Grund in `cpu_fehler` und im Status. Dieselben Werte stehen in der Messzeile unter der Szene und beim Schließen im Plugin-Status.
 
+## Bildschirmschoner „Wetterszene“
+- Registriert sich über `publishScreensaverView("wetter", "Wetterszene", …)` als nativer Kiosk-Satellite-Bildschirmschoner. Aktivierung, Timeout, Helligkeit, Aufwecken bei Berührung/Bewegung und Pixel-Shift bleiben vollständig bei Kiosk Satellite.
+- Vollbild-Wetterszene „Meer“ ohne schwarze Balken: Himmel nach Sonnenhöhe, echte Sternbilder und Mondphase, ziehende Wolken, Leuchtturm mit mehrschichtigem Lichtkegel, Strand mit Buhnen, Treibholz, Düne, mehrlagigem Strandhafer und Figur des Tages.
+- Alle UI-Elemente lassen sich in den Plugin-Einstellungen unter **Bildschirmschoner** einzeln an- und abschalten: schlanke Uhr (`groß` oder `kompakt`, optional mit Sekunden), Datum, Wetterzeile mit Regen- oder Tageshöchst-/Tiefstwert, bis zu zwei Hinweis-/Warnungskarten oben rechts (`persistent_notification/subscribe` sowie aktive Wetter-/Bevölkerungswarnungen) und eine kompakte Musik-Anzeige unten links bei aktivem Media-Player (mit konfigurierbarer Ausschlussliste).
+- Sparsame adaptive Bildrate: bei ruhigem Wetter standardmäßig 12 fps (einstellbar), bei Regen, Schnee, Hagel, Wind oder Gewitter 24 fps. Pausiert sofort, sobald der Bildschirm aus oder die View nicht sichtbar ist.
+
 ## Abos
-Alle Home-Assistant-Abos (Ansicht-Anfragen, Personen, Wetter) melden sich selbst neu an, wenn Home Assistant sie beendet oder ablehnt, zum Beispiel nach einem Neustart: nach 5 s, 10 s, 30 s und danach alle 60 s.
+Alle Home-Assistant-Abos (Ansicht-Anfragen, Personen, Wetter, Benachrichtigungen und Schoner-Infos) melden sich selbst neu an, wenn Home Assistant sie beendet oder ablehnt, zum Beispiel nach einem Neustart: nach 5 s, 10 s, 30 s und danach alle 60 s.
 
 ## Rechte
 - `overlay`: die Ansichten
-- `ha`: Kalender lesen, Personen und ihren Verlauf lesen, Wetter, Sonne und Heimkoordinaten lesen, Abo und Meldungen der Echo-Show-Integration
+- `screensaver`: nativer Bildschirmschoner „Wetterszene“
+- `ha`: Kalender lesen, Personen und ihren Verlauf lesen, Wetter, Sonne, Heimkoordinaten, Benachrichtigungen, Warnungen und aktive Media-Player lesen, Abo und Meldungen der Echo-Show-Integration
 - `host.read`: freier RAM, Bildschirmschoner und Bildschirm (Pause der Wetterszene)
 
 Das Plugin schreibt nichts in Home Assistant.

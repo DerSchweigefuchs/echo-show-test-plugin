@@ -1,9 +1,11 @@
 package echoshow.kiosktest;
 
+import android.content.Context;
 import android.os.Debug;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.view.View;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Collections;
@@ -14,6 +16,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import me.jxl.kiosk.plugins.KioskPlugin;
+import me.jxl.kiosk.plugins.KsTheme;
+import me.jxl.kiosk.plugins.OverlayFactory;
 import me.jxl.kiosk.plugins.OverlaySpec;
 import me.jxl.kiosk.plugins.PluginHost;
 
@@ -32,10 +36,13 @@ import me.jxl.kiosk.plugins.PluginHost;
  */
 public final class EchoShowTestPlugin implements KioskPlugin {
     static final String OVERLAY = "ansicht";
+    static final String SCHONER_KEY = "wetter";
     static final String ABO = "ansicht_abo";
     static final String PERSONEN = "anw_personen";
     static final String WETTER = "wx_daten";
-    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit", "wetter"};
+    static final String SCHONER_NOTIF = "schoner_notif";
+    static final String SCHONER_INFO = "schoner_info";
+    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit", "wetter", "schoner"};
     private static final long VERLAUF_GUELTIG = 300_000L;   // like the dashboard page: reload after 5 minutes
 
     private volatile PluginHost host;
@@ -53,12 +60,20 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile String wetterEntity = "";
     private volatile boolean sternbildNamen = true;
     private volatile int wetterFps = 30;
+    private volatile SchonerDaten.Optionen schonerOpt = new SchonerDaten.Optionen();
+    private volatile String schonerMusikAusschluss = "";
 
     // weather data (live render_template), screensaver / screen for the scene's pause
     private volatile WetterLage.Daten wetterDaten;
     private volatile boolean schonerAktiv, bildschirmAus;
     private volatile boolean schonerEventDa, bildschirmEventDa;
-    private boolean zustandAbos;
+    private boolean zustandAbos, schonerRegistriert;
+    private final Object schonerLock = new Object();
+    private final Map<String, SchonerDaten.Hinweis> schonerNotifs = new LinkedHashMap<>();
+    private List<SchonerDaten.Hinweis> schonerWarnungen = Collections.emptyList();
+    private SchonerDaten.Musik schonerMusik;
+    private volatile SchonerDaten.Zustand schonerZustand = new SchonerDaten.Zustand();
+    private WetterView schonerView;   // active KS native screensaver view, guarded by this
 
     // presence data (worker thread writes, views read immutable snapshots)
     private String personenAboFuer;                    // template of the people subscription (to notice setting changes)
@@ -85,6 +100,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo aboAnsicht = new Dauerabo(ABO, zeit, melder);
     private final Dauerabo aboPersonen = new Dauerabo(PERSONEN, zeit, melder);
     private final Dauerabo aboWetter = new Dauerabo(WETTER, zeit, melder);
+    private final Dauerabo aboSchonerNotif = new Dauerabo(SCHONER_NOTIF, zeit, melder);
+    private final Dauerabo aboSchonerInfo = new Dauerabo(SCHONER_INFO, zeit, melder);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
 
@@ -114,6 +131,19 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         sternbildNamen = !Boolean.FALSE.equals(s.get("sternbildNamen"));
         wetterFps = "24".equals(s.get("wetterFps")) ? 24 : 30;
         wetterAbgleichen();
+        SchonerDaten.Optionen opt = new SchonerDaten.Optionen();
+        opt.uhr = !Boolean.FALSE.equals(s.get("schonerUhr"));
+        opt.uhrGross = !"kompakt".equals(s.get("schonerUhrGross"));
+        opt.sekunden = Boolean.TRUE.equals(s.get("schonerSekunden"));
+        opt.datum = !Boolean.FALSE.equals(s.get("schonerDatum"));
+        opt.wetter = !Boolean.FALSE.equals(s.get("schonerWetter"));
+        opt.hinweise = !Boolean.FALSE.equals(s.get("schonerHinweise"));
+        opt.musik = !Boolean.FALSE.equals(s.get("schonerMusik"));
+        opt.ruhigFps = parseInt(s.get("schonerRuhigFps"), 12, 6, 30);
+        schonerOpt = opt;
+        schonerMusikAusschluss = text(s.get("schonerMusikAusschluss"), "");
+        schonerAbgleichen();
+        schonerOptionenMelden(opt);
         status();
     }
 
@@ -124,7 +154,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 String name = args.isEmpty() ? "kalender" : ansicht(args.get(0));
                 if (name == null) {
                     PluginHost h = host;
-                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit, wetter", true);
+                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit, wetter, schoner", true);
                     return;
                 }
                 oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.get(1) : null), "Befehl");
@@ -135,6 +165,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             case "liste":
             case "anwesenheit":
             case "wetter":
+            case "schoner":
                 oeffnen(command, null, false, Collections.<String, Object>emptyMap(), "Befehl");
                 return;
             case "schliessen":
@@ -149,6 +180,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (("ks.ha.subscription." + ABO).equals(event)) aboEreignis(payload);
         else if (("ks.ha.subscription." + PERSONEN).equals(event)) personenEreignis(payload);
         else if (("ks.ha.subscription." + WETTER).equals(event)) wetterEreignis(payload);
+        else if (("ks.ha.subscription." + SCHONER_NOTIF).equals(event)) schonerNotifEreignis(payload);
+        else if (("ks.ha.subscription." + SCHONER_INFO).equals(event)) schonerInfoEreignis(payload);
         else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
             if ("ks.screensaver.state".equals(event)) {
                 schonerEventDa = true;
@@ -165,11 +198,16 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     }
 
     @Override public void stop() {
-        host = null;   // KS has revoked the host and removes the overlay itself
-        synchronized (this) { aktuell = null; }
+        host = null;   // KS has revoked the host and removes the overlay & screensaver itself
+        synchronized (this) {
+            aktuell = null;
+            schonerView = null;
+        }
         aboAnsicht.stop();
         aboPersonen.stop();
         aboWetter.stop();
+        aboSchonerNotif.stop();
+        aboSchonerInfo.stop();
         try {
             WetterView.beenden();   // end the layer build thread, give the weather bitmaps back
         } catch (RuntimeException | LinkageError ignored) {
@@ -177,6 +215,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         personenAboFuer = null;
         zustandAbos = false;
+        schonerRegistriert = false;
         schonerEventDa = bildschirmEventDa = false;
     }
 
@@ -257,7 +296,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         ramLesen(m, true, a);
         if ("kalender".equals(ansicht)) kalenderLaden(h, a);
         else if ("anwesenheit".equals(ansicht)) anwesenheitLaden(a);
-        else if ("wetter".equals(ansicht)) {
+        else if ("wetter".equals(ansicht) || "schoner".equals(ansicht)) {
             WetterLage.Daten wd = wetterDaten;
             if (wd != null) {
                 m.wetter = wd;
@@ -491,8 +530,13 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     private void pauseMelden() {
         TestAnsicht a;
-        synchronized (this) { a = aktuell; }
+        WetterView sv;
+        synchronized (this) {
+            a = aktuell;
+            sv = schonerView;
+        }
         if (a != null) main().post(() -> TestAnsicht.sicher(a::pauseGeaendert));
+        if (sv != null) main().post(() -> TestAnsicht.sicher(sv::pauseGeaendert));
     }
 
     private void wetterEreignis(Map<String, Object> p) {
@@ -512,14 +556,129 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (d == null) return;
         wetterDaten = d;
         TestAnsicht a;
-        synchronized (this) { a = aktuell != null && "wetter".equals(aktuell.m.ansicht) ? aktuell : null; }
+        WetterView sv;
+        synchronized (this) {
+            a = aktuell != null && ("wetter".equals(aktuell.m.ansicht) || "schoner".equals(aktuell.m.ansicht)) ? aktuell : null;
+            sv = schonerView;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setDaten(d)));
         if (a == null) return;
         a.m.wetter = d;
         if (a.m.tDaten == 0) a.m.tDaten = SystemClock.uptimeMillis();
         main().post(() -> TestAnsicht.sicher(a::datenDa));
     }
 
+    // ---- native KS screensaver ("Wetterszene") ---------------------------------------------------------------------
+
+    private final OverlayFactory schonerFactory = new OverlayFactory() {
+        @Override public View create(Context ctx, KsTheme theme) {
+            WetterView v = new WetterView(ctx, new WetterView.Aktionen() {
+                @Override public void zurueck() {}
+                @Override public boolean pausiert() { return schonerPausiert(); }
+                @Override public void fertig(long aufbauMs) {}
+            }, theme, schonerOpt, "live", null, sternbildNamen, false);
+            WetterLage.Daten wd = wetterDaten;
+            if (wd != null) v.setDaten(wd);
+            v.setSchoner(schonerZustand);
+            synchronized (EchoShowTestPlugin.this) { schonerView = v; }
+            return v;
+        }
+
+        @Override public void onDestroy(View view) {
+            synchronized (EchoShowTestPlugin.this) {
+                if (schonerView == view) schonerView = null;
+            }
+        }
+    };
+
+    private void schonerAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        if (!h.isHeadless() && !schonerRegistriert) {
+            try {
+                h.publishScreensaverView(SCHONER_KEY, "Wetterszene", schonerFactory);
+                schonerRegistriert = true;
+            } catch (RuntimeException | LinkageError ignored) {
+                // older KS without native screensaver support
+            }
+        }
+        SchonerDaten.Optionen opt = schonerOpt;
+        boolean brauchtNotif = !h.isHeadless() && opt.hinweise;
+        boolean brauchtInfo = !h.isHeadless() && (opt.hinweise || opt.musik);
+        aboSchonerNotif.setzen(h, brauchtNotif ? SchonerDaten.notifAbo() : null, brauchtNotif ? "notif" : null);
+        Map<String, Object> infoMsg = brauchtInfo ? SchonerDaten.infoAbo(schonerMusikAusschluss) : null;
+        aboSchonerInfo.setzen(h, infoMsg, infoMsg == null ? null : (String) infoMsg.get("template"));
+    }
+
+    private void schonerNotifEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboSchonerNotif.ereignis(p);
+            return;
+        }
+        if (!(p.get("event") instanceof Map)) return;
+        SchonerDaten.Zustand z;
+        synchronized (schonerLock) {
+            SchonerDaten.notifEreignis(schonerNotifs, (Map<?, ?>) p.get("event"));
+            z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+        }
+        schonerZustandMelden(z);
+    }
+
+    private void schonerInfoEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboSchonerInfo.ereignis(p);
+            return;
+        }
+        if (!(p.get("event") instanceof Map)) return;
+        Map<?, ?> ev = (Map<?, ?>) p.get("event");
+        if (!ev.containsKey("result")) return;
+        Object[] res;
+        try {
+            res = SchonerDaten.infoLesen(ev.get("result"), Json::lesen);
+        } catch (RuntimeException e) {
+            return;
+        }
+        SchonerDaten.Zustand z;
+        synchronized (schonerLock) {
+            @SuppressWarnings("unchecked")
+            List<SchonerDaten.Hinweis> w = (List<SchonerDaten.Hinweis>) res[0];
+            schonerWarnungen = w;
+            schonerMusik = (SchonerDaten.Musik) res[1];
+            z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+        }
+        schonerZustandMelden(z);
+    }
+
+    private void schonerZustandMelden(SchonerDaten.Zustand z) {
+        schonerZustand = z;
+        WetterView sv;
+        TestAnsicht a;
+        synchronized (this) {
+            sv = schonerView;
+            a = aktuell != null && "schoner".equals(aktuell.m.ansicht) ? aktuell : null;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setSchoner(z)));
+        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.schonerFuellen(z)));
+    }
+
+    private void schonerOptionenMelden(SchonerDaten.Optionen opt) {
+        WetterView sv;
+        TestAnsicht a;
+        synchronized (this) {
+            sv = schonerView;
+            a = aktuell != null && "schoner".equals(aktuell.m.ansicht) ? aktuell : null;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setSchonerOptionen(opt)));
+        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.schonerOptionen(opt)));
+    }
+
     boolean wetterPausiert() { return schonerAktiv || bildschirmAus; }
+
+    boolean schonerPausiert() { return bildschirmAus; }
+
+    SchonerDaten.Optionen schonerOptionen() { return schonerOpt; }
+
+    SchonerDaten.Zustand schonerZustand() { return schonerZustand; }
 
     boolean sternbildNamen() { return sternbildNamen; }
 
@@ -551,7 +710,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             if (m.datenFehler != null) d.put("fehler", m.datenFehler);
         }
         if ("kalender".equals(m.ansicht)) d.put("termine", m.termine == null ? 0 : m.termine.size());
-        if ("wetter".equals(m.ansicht)) {
+        if ("wetter".equals(m.ansicht) || "schoner".equals(m.ansicht)) {
             Map<String, Object> sz = m.szene;
             if (sz != null) for (Map.Entry<String, Object> e : sz.entrySet()) if (e.getValue() != null) d.put(e.getKey(), e.getValue());
             WetterLage.Daten wd = m.wetter;
@@ -753,9 +912,18 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         String a = arg.trim();
         if ("timer".equals(ansicht) && a.matches("\\d{1,5}")) p.put("sekunden", Integer.parseInt(a));
         else if ("kalender".equals(ansicht) && Kalender.TAG.matcher(a).matches()) p.put("tag", a);
-        else if ("wetter".equals(ansicht) && "zeitraffer".equals(a)) p.put("modus", "zeitraffer");
-        else if ("wetter".equals(ansicht) && a.matches("([01]?\\d|2[0-3]):[0-5]\\d")) p.put("uhr", a);
+        else if (("wetter".equals(ansicht) || "schoner".equals(ansicht)) && "zeitraffer".equals(a)) p.put("modus", "zeitraffer");
+        else if (("wetter".equals(ansicht) || "schoner".equals(ansicht)) && a.matches("([01]?\\d|2[0-3]):[0-5]\\d")) p.put("uhr", a);
         return p;
+    }
+
+    private static int parseInt(Object o, int standard, int min, int max) {
+        int v = standard;
+        if (o instanceof Number) v = ((Number) o).intValue();
+        else if (o instanceof String) {
+            try { v = Integer.parseInt(((String) o).trim()); } catch (NumberFormatException ignored) {}
+        }
+        return Math.max(min, Math.min(max, v));
     }
 
     static List<String> args(Map<String, Object> arguments) {

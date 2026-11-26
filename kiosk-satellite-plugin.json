@@ -3,15 +3,16 @@
   "apiVersion": 1,
   "id": "echo-show-test",
   "name": "Echo Show Test-Ansichten",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer mit Figur des Tages), um native Android-Views mit Lovelace-Seiten zu vergleichen. Öffnet per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo (nur Seiten test-kalender, test-timer, test-liste, test-anwesenheit, test-wetter). Misst Öffnungszeit, Frames und freien RAM. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period).",
+  "description": "Prototyp: native Vollbild-Ansichten (Kalender-Tagesliste, Timer, Liste mit 50 Zeilen, Anwesenheit, Live-Wetterszene am Meer mit Figur des Tages) sowie nativer Bildschirmschoner „Wetterszene“ mit Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige. Öffnet Ansichten per ks://plugin/echo-show-test/zeigen/<ansicht> oder über echo_show/ansicht/abo. Liest Home Assistant nur (calendar.get_events, render_template, history/history_during_period, persistent_notification/subscribe).",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [
     "overlay",
+    "screensaver",
     "ha",
     "host.read"
   ],
@@ -110,6 +111,88 @@
       "description": "Ziel-Bildrate der Wetterszene. Sie pausiert ganz, solange sie nicht sichtbar ist, der Bildschirmschoner läuft oder der Bildschirm aus ist."
     },
     {
+      "key": "schonerUhr",
+      "type": "boolean",
+      "title": "Uhrzeit zeigen",
+      "default": true,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt die schlanke Uhrzeit links oben im Bildschirmschoner „Wetterszene“."
+    },
+    {
+      "key": "schonerUhrGross",
+      "type": "select",
+      "title": "Uhr-Größe",
+      "default": "groß",
+      "options": [
+        "groß",
+        "kompakt"
+      ],
+      "group": "Bildschirmschoner",
+      "description": "groß: klassische große Uhr am Himmel. kompakt: kleinere Uhr mit mehr freier Sicht auf den Himmel."
+    },
+    {
+      "key": "schonerSekunden",
+      "type": "boolean",
+      "title": "Sekunden zeigen",
+      "default": false,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt zusätzlich die Sekunden neben der Uhrzeit."
+    },
+    {
+      "key": "schonerDatum",
+      "type": "boolean",
+      "title": "Datum zeigen",
+      "default": true,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt Wochentag und Datum unter der Uhr."
+    },
+    {
+      "key": "schonerWetter",
+      "type": "boolean",
+      "title": "Wetterzeile zeigen",
+      "default": true,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt Symbol, Temperatur, Zustand sowie Regen- oder Tageshöchst-/Tiefstwert."
+    },
+    {
+      "key": "schonerHinweise",
+      "type": "boolean",
+      "title": "Hinweise & Warnungen zeigen",
+      "default": true,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt bis zu zwei aktive Warnungen oder Home-Assistant-Benachrichtigungen oben rechts."
+    },
+    {
+      "key": "schonerMusik",
+      "type": "boolean",
+      "title": "Aktive Musik zeigen",
+      "default": true,
+      "group": "Bildschirmschoner",
+      "description": "Zeigt unten links eine kompakte Anzeige, sobald ein Media-Player spielt."
+    },
+    {
+      "key": "schonerMusikAusschluss",
+      "type": "string",
+      "title": "Ignorierte Media-Player",
+      "default": "",
+      "group": "Bildschirmschoner",
+      "description": "Kommagetrennte media_player-Entitäten, die im Bildschirmschoner nicht angezeigt werden sollen."
+    },
+    {
+      "key": "schonerRuhigFps",
+      "type": "select",
+      "title": "Bildrate bei ruhigem Wetter",
+      "default": "12",
+      "options": [
+        "12",
+        "15",
+        "20",
+        "24"
+      ],
+      "group": "Bildschirmschoner",
+      "description": "Sparsame Bildrate im Schoner bei klarem oder bewölktem Wetter (bei Regen, Schnee, Wind oder Gewitter automatisch 24 fps)."
+    },
+    {
       "key": "uebergang",
       "type": "select",
       "title": "Übergang beim Öffnen",
@@ -127,7 +210,7 @@
   "commands": [
     {
       "id": "zeigen",
-      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter)"
+      "title": "Ansicht zeigen (Link: kalender, timer, liste, anwesenheit, wetter, schoner)"
     },
     {
       "id": "kalender",
@@ -148,6 +231,10 @@
     {
       "id": "wetter",
       "title": "Wetter-Szene zeigen (Link: wetter/zeitraffer oder wetter/HH:MM)"
+    },
+    {
+      "id": "schoner",
+      "title": "Bildschirmschoner-Vorschau zeigen (Link: schoner/zeitraffer oder schoner/HH:MM)"
     },
     {
       "id": "schliessen",

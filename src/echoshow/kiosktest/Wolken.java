@@ -40,16 +40,20 @@ final class Wolken {
     }
 
     static List<Reihe> bauen(WetterLage w, int tagNr) {
+        return bauen(w, tagNr, YH);
+    }
+
+    static List<Reihe> bauen(WetterLage w, int tagNr, float yh) {
         List<Reihe> out = new ArrayList<>();
         if (w.cover <= 0) return out;
         Zufall R = new Zufall(tagNr * 31 + w.wolken * 7);
-        double k = .5 + .5 * YH / 457;
+        double k = .5 + .5 * yh / 457;
         boolean wolkig = "cloudy".equals(w.cond);
         for (int j = 0; j < REIHEN; j++) {
             Reihe reihe = new Reihe();
             double d = 1 - j / (double) (REIHEN - 1);
             reihe.d = (float) d;
-            double by0 = YH * (.16 + .84 * Math.pow(d, .7)) + 6, H0 = (24 + 150 * Math.pow(1 - d, 1.25)) * k;
+            double by0 = yh * (.16 + .84 * Math.pow(d, .7)) + 6, H0 = (24 + 150 * Math.pow(1 - d, 1.25)) * k;
             for (double x = -140 + R.next() * 80; x < 1100; ) {
                 double Hb = H0 * (.7 + R.next() * .6), W = Hb * (wolkig ? 2.6 + R.next() * 2.2 : 2 + R.next() * 1.8), cx = x + W / 2;
                 double by = by0 + (R.next() - .5) * H0 * .7 * (1 - d * .6);

@@ -61,5 +61,5 @@ final class Messung {
 
     long ms(long t) { return t == 0 ? -1 : t - t0; }
 
-    boolean brauchtDaten() { return "kalender".equals(ansicht) || "anwesenheit".equals(ansicht) || "wetter".equals(ansicht); }
+    boolean brauchtDaten() { return "kalender".equals(ansicht) || "anwesenheit".equals(ansicht) || "wetter".equals(ansicht) || "schoner".equals(ansicht); }
 }
