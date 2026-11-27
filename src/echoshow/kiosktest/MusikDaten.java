@@ -244,7 +244,7 @@ final class MusikDaten {
             first = false;
             sb.append('"').append(escapeJson(e.getKey())).append("\":");
             double v = Math.round(e.getValue() * 100.0) / 100.0;
-            sb.append(String.format(Locale.ROOT, "%.2f", v));
+            sb.append(Double.toString(v));
         }
         sb.append('}');
         return sb.toString();

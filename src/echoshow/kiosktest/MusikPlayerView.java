@@ -108,6 +108,9 @@ final class MusikPlayerView extends FrameLayout {
     private boolean ziehendSeek;
     private double seekDragPos, seekLockedPos;
     private long seekLockUntilMs;
+    private String vorlaufLockedObj = "";
+    private double vorlaufLockedVal;
+    private long vorlaufLockUntilMs;
     private long letztesNachladenMs;
 
     private final Runnable nachladenRun = this::triggerNachladen;
@@ -127,7 +130,7 @@ final class MusikPlayerView extends FrameLayout {
 
     private void versatzTimerNeustarten() {
         mainHandler.removeCallbacks(versatzAusRun);
-        if (versatzSichtbar) mainHandler.postDelayed(versatzAusRun, 10_000L);
+        if (versatzSichtbar) mainHandler.postDelayed(versatzAusRun, 11_000L);
     }
 
     private void triggerNachladen() {
@@ -194,9 +197,15 @@ final class MusikPlayerView extends FrameLayout {
     void setDaten(Object haDaten) {
         if (haDaten == null) return;
         MusikDaten.Zustand neu = MusikDaten.lesen(haDaten, System.currentTimeMillis());
+        MusikDaten.Player pl = neu.aktuellerPlayer();
+        if (System.currentTimeMillis() < vorlaufLockUntilMs && !vorlaufLockedObj.isEmpty()) {
+            neu.vorlauf.put(vorlaufLockedObj, vorlaufLockedVal);
+            if (pl != null && vorlaufLockedObj.equals(pl.objectId())) {
+                neu.aktivVorlauf = vorlaufLockedVal;
+            }
+        }
         daten = neu;
         lyricsAn = neu.liedtextAn;
-        MusikDaten.Player pl = neu.aktuellerPlayer();
         if (pl == null || pl.picture.isEmpty()) {
             coverAngefordert = "";
         } else if (!pl.picture.equals(coverAngefordert)) {
@@ -365,12 +374,17 @@ final class MusikPlayerView extends FrameLayout {
         double neu = Math.max(-3.0, Math.min(6.0, Math.round((cur + delta) * 4.0) / 4.0));
         daten.vorlauf.put(pl.objectId(), neu);
         daten.aktivVorlauf = neu;
+        vorlaufLockedObj = pl.objectId();
+        vorlaufLockedVal = neu;
+        vorlaufLockUntilMs = System.currentTimeMillis() + 1500L;
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("player", pl.entityId);
-        data.put("delta", delta);
-        callService("script", "musik_liedtext_vorlauf_anpassen", null, data);
+        data.put("value", MusikDaten.vorlaufJson(daten.vorlauf));
+        callService("input_text", "set_value", "input_text.musik_liedtext_vorlauf_geraete", data);
         aktivLyrikIdx = -2;
         versatzTimerNeustarten();
+        if (lyricsAn && pl.istLive() && liedtext != null && liedtext.synced) {
+            canvasView.pruefeLyrikTick(pl, System.currentTimeMillis());
+        }
         canvasView.invalidate();
     }
 
@@ -666,7 +680,7 @@ final class MusikPlayerView extends FrameLayout {
                 p.setColor(0x1FFFFFFF);
                 c.drawCircle(plusL + 22f, cy, 22f, p);
                 drawIcon(c, "mdi:plus", plusL + 11f, cy - 11f, 22f, TXT);
-                hits.add(new Hit("lead_p", "", plusL - 2f, cy - 24f, ctrlR + 2f, cy + 24f));
+                hits.add(new Hit("lead_p", "", plusL - 8f, cy - 32f, ctrlR + 8f, cy + 32f));
 
                 // Label + value (96 px)
                 float txtR = plusL - 4f;
@@ -689,7 +703,7 @@ final class MusikPlayerView extends FrameLayout {
                 p.setColor(0x1FFFFFFF);
                 c.drawCircle(minusL + 22f, cy, 22f, p);
                 drawIcon(c, "mdi:minus", minusL + 11f, cy - 11f, 22f, TXT);
-                hits.add(new Hit("lead_m", "", minusL - 2f, cy - 24f, minusR + 2f, cy + 24f));
+                hits.add(new Hit("lead_m", "", minusL - 8f, cy - 32f, minusR + 8f, cy + 32f));
             }
         }
 
@@ -1198,9 +1212,14 @@ final class MusikPlayerView extends FrameLayout {
                         updateSeekFromX(downHit.arg, vx);
                         invalidate();
                     } else {
-                        if (Math.hypot(e.getX() - downX, e.getY() - downY) > 12f * skala) {
-                            ziehendScroll = true;
+                        double moveDist = Math.hypot(e.getX() - downX, e.getY() - downY);
+                        if (moveDist > 18f * skala) {
                             mainHandler.removeCallbacks(langCheck);
+                        }
+                        boolean kannScrollen = "dev".equals(offenPopover) || "grp".equals(offenPopover)
+                            || (lyricsAn && liedtext != null && !liedtext.synced && lyricsMaxScroll > 0);
+                        if (kannScrollen && moveDist > 16f * skala) {
+                            ziehendScroll = true;
                         }
                         if (ziehendScroll) {
                             float dyV = (lastY - e.getY()) / skala;
@@ -1225,6 +1244,7 @@ final class MusikPlayerView extends FrameLayout {
                     } else if (a == MotionEvent.ACTION_UP && !ziehendScroll && !langAusgeloest
                             && Math.hypot(e.getX() - downX, e.getY() - downY) < 28f * skala) {
                         Hit h = findeHit(vx, vy);
+                        if (h == null) h = downHit;
                         if (h != null) {
                             performClick();
                             ausfuehren(h);
