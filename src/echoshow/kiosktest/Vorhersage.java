@@ -20,7 +20,7 @@ import java.util.Locale;
  * Asked-for days are framed in the week (approved mockup). Sheet coordinates: 923 x 262, drawn at page (20, 308).
  */
 final class Vorhersage {
-    static final float BREITE = 923, HOEHE = 262, X0 = 20, Y0 = 308;
+    static final float BREITE = 923, HOEHE = 252, X0 = 20, Y0 = 308;
     static final int TXT = 0xFFECEBE8, SUB = 0xFFC9D3DC, BLUE = 0xFF6FB3F2, AMB = 0xFFF2B45C, PROZENT = 0xFF8FC0FF, MM = 0xFF8FBAF0;
     static final String[] DS = {"Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"}, DL = {"Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"};
     static final int RG_MIN = 30;
@@ -319,9 +319,14 @@ final class Vorhersage {
     static void zeichnen(Canvas c, Inhalt in) {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), t = new Paint(Paint.ANTI_ALIAS_FLAG);
         Typeface normal = Typeface.create("sans-serif", Typeface.NORMAL), mittel = Typeface.create("sans-serif-medium", Typeface.NORMAL), fett = Typeface.create("sans-serif", Typeface.BOLD);
-        p.setColor(0xF2141F2F);   // rgba(20,31,47,.95)
-        c.drawRoundRect(new RectF(0, 0, BREITE, HOEHE), 24, 24, p);
-        p.setColor(0x61FFFFFF);
+        p.setColor(0xCC0E1620);   // screensaver dark glass (matches SchonerUi.GLAS)
+        c.drawRoundRect(new RectF(0, 0, BREITE, HOEHE), 22, 22, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(1f);
+        p.setColor(0x22FFFFFF);
+        c.drawRoundRect(new RectF(.5f, .5f, BREITE - .5f, HOEHE - .5f), 21.5f, 21.5f, p);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0x30FFFFFF);
         c.drawRoundRect(new RectF(BREITE / 2 - 23, 7, BREITE / 2 + 23, 12), 3, 3, p);
         // summary
         List<Teil> sum = "w".equals(in.modus) ? sumW(in.woche, in.regen, in.jetzt) : sumH(in.stunden, in.regen, in.jetzt, in.jetztNass, in.cond);

@@ -295,7 +295,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), bild = new Paint(Paint.FILTER_BITMAP_FLAG), linie = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG), tOrtP, tTempP, tZustandP, tZeilenP;
     private final Typeface schrift = Typeface.create("sans-serif", Typeface.NORMAL), schriftMittel = Typeface.create("sans-serif-medium", Typeface.NORMAL);
-    private final Shader ausblenden = new LinearGradient(0, 292, 0, UNTEN, 0x000D1720, 0xFF0D1720, Shader.TileMode.CLAMP);
+    private final Shader ausblenden = new LinearGradient(0, 336, 0, UNTEN, 0x000D1720, 0xFF0D1720, Shader.TileMode.CLAMP);
     private final RectF r = new RectF();
     private final Matrix wolkenMatrix = new Matrix();
     private float skala = 1, dx, dy, downX, downY;
@@ -915,7 +915,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                     return true;
                 }
                 if (!schoner && !nurSzene && vorhersageInhalt != null && !vorhersageInhalt.leer()) {
-                    float sx = x - Vorhersage.X0, sy = y - Vorhersage.Y0;
+                    float sx = x - Vorhersage.X0, sy = y - vorhersageY0();
                     RectF[] sw = Vorhersage.schalter(text);
                     if (sw[0].contains(sx, sy) && !"h".equals(vorhersageModus)) {
                         performClick();
@@ -1089,25 +1089,23 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private void zeichnen(Canvas c) {
         int gw = getWidth(), gh = getHeight();
         if (gw <= 0 || gh <= 0) return;
-        float neu = schoner ? gw / W : Math.min(gw / W, gh / H);
+        float neu = gw / W;
         if (neu <= 0) return;
-        float neuViewH = schoner ? gh / neu : H;
+        float neuViewH = gh / neu;
         if (neu != skala || Math.abs(neuViewH - viewH) > .5f) {
             momentUm = -1;
             himmelKey = "";
         }
         skala = neu;
         viewH = neuViewH;
+        dx = 0;
+        dy = 0;
         if (!schoner) letzteSeiteSkala = skala;
         if (schoner) {
-            dx = 0;
-            dy = 0;
             landY = Math.max(0, viewH - UNTEN);
             hz = HZ + landY;
             wolkenYh = Wolken.YH + Math.round(landY / 10f) * 10f;
         } else {
-            dx = (gw - W * skala) / 2;
-            dy = (gh - H * skala) / 2;
             landY = 0;
             hz = HZ;
             wolkenYh = Wolken.YH;
@@ -1167,8 +1165,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             landschaften.nachFigur(c, ort);
         }
         if (!schoner) {
-            mitShader(ausblenden);   // the fade into the dark area stays above the figure's feet (page: wl-fd after the figure)
-            c.drawRect(0, 292, W, UNTEN, p);
+            mitShader(ausblenden);   // subtle bottom-edge blend only behind top of floating glass sheet (y = 336..362)
+            c.drawRect(0, 336, W, UNTEN, p);
             p.setShader(null);
         }
         c.restore();
@@ -1270,12 +1268,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     private static int skKey(float sk) { return Math.max(1, Math.round(sk * 20f)); }
 
+    private float vorhersageY0() { return Math.max(326f, viewH - Vorhersage.HOEHE - 12f); }
+
     private static float standardSkala() {
         if (letzteSeiteSkala > 0) return letzteSeiteSkala;
         try {
             android.util.DisplayMetrics dm = android.content.res.Resources.getSystem().getDisplayMetrics();
             if (dm != null && dm.widthPixels > 0 && dm.heightPixels > 0) {
-                return Math.min(dm.widthPixels / W, dm.heightPixels / H);
+                return dm.widthPixels / W;
             }
         } catch (RuntimeException ignored) {}
         return 1f;
@@ -1567,10 +1567,9 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                     : (q <= .80f ? WetterLage.mix(L.himmel[1], L.himmel[2], (q - .46f) / .34f)
                     : WetterLage.mix(L.himmel[2], 0xFF0D1720, Math.min(1, (q - .80f) / .20f)));
             } else {
-                float q = y / H;
-                c = q <= .3f ? WetterLage.mix(L.himmel[0], L.himmel[1], q / .3f)
-                    : (q <= .55f ? WetterLage.mix(L.himmel[1], L.himmel[2], (q - .3f) / .25f)
-                    : WetterLage.mix(L.himmel[2], 0xFF0D1720, Math.min(1, (q - .55f) / .07f)));
+                float q = Math.min(1f, y / (hz + 45f));
+                c = q <= .46f ? WetterLage.mix(L.himmel[0], L.himmel[1], q / .46f)
+                    : WetterLage.mix(L.himmel[1], L.himmel[2], (q - .46f) / .54f);
             }
             f[i] = WetterLage.tont(c, y, L);
             pos[i] = i / (n - 1f);
@@ -1623,7 +1622,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         float nacht = 1 - L.tag;
         float tY = landY;
-        int himmelUnten = WetterLage.tont(WetterLage.mix(L.himmel[1], L.himmel[2], schoner ? .8f : (HZ / H - .3f) / .25f), hz, L);
+        int himmelUnten = WetterLage.tont(WetterLage.mix(L.himmel[1], L.himmel[2], .8f), hz, L);
         int meerOben = WetterLage.mix(WetterLage.tont(P.lakeA, hz + 4, L), himmelUnten, .16f);
         int meerUnten = WetterLage.mix(WetterLage.tont(P.lakeB, tY + 300, L), WetterLage.tont(L.himmel[0], tY + 300, L), .06f);
         meerShader = new LinearGradient(0, HZ, 0, 300, meerOben, meerUnten, Shader.TileMode.CLAMP);
@@ -1676,12 +1675,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         cRumpf = WetterLage.tont(WetterLage.mix(0xFF22252C, 0xFF3A3F48, L.tag), hz, L);
         cSegel = WetterLage.tont(WetterLage.mix(0xFF5A6070, 0xFFF4F2EC, L.tag), hz - 14, L);
         cFock = WetterLage.tont(WetterLage.mix(0xFF50566A, 0xFFE6E2D8, L.tag), hz - 12, L);
-        // dark patch behind the header (day / night / snow and fog)
+        // soft elliptical scrim behind top-left text (matches SchonerUi scrim)
         boolean nachtJetzt = L.tag < .5f;
         if (dunkelShader == null || nachtJetzt != nachtKopf) {
             nachtKopf = nachtJetzt;
-            float dunkel = nachtJetzt ? .25f : (lage.schnee || lage.nebel ? .5f : .38f);
-            dunkelShader = new RadialGradient(0, 0, 520, WetterLage.alpha(0xFF080E16, dunkel), 0x00080E16, Shader.TileMode.CLAMP);
+            float dunkel = lage.schnee || lage.nebel ? .36f : (nachtJetzt ? .16f : .30f);
+            dunkelShader = new RadialGradient(0, 0, 340,
+                new int[] {WetterLage.alpha(0xFF080E16, dunkel), WetterLage.alpha(0xFF080E16, dunkel * .45f), 0x00080E16},
+                new float[] {0f, .52f, 1f}, Shader.TileMode.CLAMP);
         }
     }
 
@@ -2291,17 +2292,20 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         return hagelXY;
     }
 
-    /** Header like the weather page, drawn directly: dark patch, back button, place, temperature, condition, details. */
+    /** Header matching screensaver polish: soft scrim, dark-glass back button, place, temperature, condition, details. */
     private void kopf(Canvas c) {
         c.save();
-        c.translate(160, 150);
-        c.scale(1, .5f);
+        c.translate(210, 140);
+        c.scale(1.18f, .72f);
         mitShader(dunkelShader);
-        c.drawCircle(0, 0, 520, p);
+        c.drawCircle(0, 0, 340, p);
         p.setShader(null);
         c.restore();
-        p.setColor(0x1FFFFFFF);
+        p.setColor(0x7A0E1620);
         c.drawCircle(58, 50, 28, p);
+        linie.setStrokeWidth(1f);
+        linie.setColor(0x24FFFFFF);
+        c.drawCircle(58, 50, 27.5f, linie);
         p.setColor(0xFFECEBE8);
         c.save();
         c.translate(44, 36);
@@ -2375,7 +2379,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         if (vorhersageBitmap != null && !vorhersageBitmap.isRecycled()) {
             c.save();
-            c.translate(Vorhersage.X0, Vorhersage.Y0);
+            c.translate(Vorhersage.X0, vorhersageY0());
             c.scale(1 / skala, 1 / skala);
             c.drawBitmap(vorhersageBitmap, 0, 0, bild);
             c.restore();
@@ -2401,9 +2405,9 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         text.setTextSize(12);
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(0xFF8FA3B5);
-        c.drawText(mess1, W / 2, 536, text);
-        c.drawText(mess2, W / 2, 554, text);
-        c.drawText(szene, W / 2, 572, text);
+        c.drawText(mess1, W / 2, viewH - 48, text);
+        c.drawText(mess2, W / 2, viewH - 30, text);
+        c.drawText(szene, W / 2, viewH - 12, text);
     }
 
     // ---- bitmap builds (background thread: no fields of the view are written) -------------------------------------------

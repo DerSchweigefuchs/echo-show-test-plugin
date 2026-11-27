@@ -142,9 +142,14 @@ final class Landschaften {
     private interface YFn { float at(float x); }
 
     private static void buildGrass(Path back, Path mid, Path front, YFn yAt, float x0, float x1, float gapA, float gapB, float scale, int seed) {
+        buildGrass(back, mid, front, yAt, x0, x1, gapA, gapB, 0f, -1f, scale, seed);
+    }
+
+    private static void buildGrass(Path back, Path mid, Path front, YFn yAt, float x0, float x1,
+                                   float gapA, float gapB, float gap2A, float gap2B, float scale, int seed) {
         Wolken.Zufall R = new Wolken.Zufall(seed);
         for (float x = x0 + 4; x < x1 - 2; x += (float) (13 + R.next() * 17)) {
-            if (x > gapA && x < gapB) continue;
+            if ((x > gapA && x < gapB) || (gap2B > gap2A && x > gap2A && x < gap2B)) continue;
             float by = yAt.at(x) + 1.5f;
             int n = 4 + (int) Math.floor(R.next() * 4);
             for (int k = 0; k < n; k++) {
@@ -156,7 +161,7 @@ final class Landschaften {
             }
         }
         for (float x = x0 + 2; x < x1 - 2; x += (float) (10 + R.next() * 14)) {
-            if (x > gapA + 2 && x < gapB - 2) continue;
+            if ((x > gapA + 2 && x < gapB - 2) || (gap2B > gap2A && x > gap2A + 2 && x < gap2B - 2)) continue;
             float by = yAt.at(x) + 2.5f;
             int n = 5 + (int) Math.floor(R.next() * 4);
             for (int k = 0; k < n; k++) {
@@ -168,7 +173,7 @@ final class Landschaften {
             }
         }
         for (float x = x0 + 8; x < x1 - 4; x += (float) (17 + R.next() * 22)) {
-            if (x > gapA - 2 && x < gapB + 2) continue;
+            if ((x > gapA - 2 && x < gapB + 2) || (gap2B > gap2A && x > gap2A - 2 && x < gap2B + 2)) continue;
             float by = yAt.at(x) + 4.5f + (float) R.next() * 4f;
             int n = 4 + (int) Math.floor(R.next() * 3);
             for (int k = 0; k < n; k++) {
@@ -372,7 +377,7 @@ final class Landschaften {
             addBlade(LICHT_WIESENGRAS, x, y, h, -2.5f * k, -.5f, .65f * k);
             addBlade(LICHT_WIESENGRAS, x + 2.2f * k, y, h * .85f, 2.2f * k, .5f, .6f * k);
         }
-        buildGrass(LICHT_GRAS_H, LICHT_GRAS_M, LICHT_GRAS_V, Landschaften::lichtY, 560, W, 796, 848, 1.2f, 202);
+        buildGrass(LICHT_GRAS_H, LICHT_GRAS_M, LICHT_GRAS_V, Landschaften::lichtY, 560, W, 796, 848, 686, 748, 1.2f, 202);
 
         // ---- 3. TAL ----
         float[][] kamm = {{140, 268}, {196, 232}, {226, 240}, {276, 198}, {306, 212}, {348, 170}, {374, 188}, {408, 176}, {446, 146},
@@ -979,6 +984,13 @@ final class Landschaften {
         if (lage.schnee) { p.setColor(WetterLage.alpha(0xFFFFFFFF, .78f)); c.drawPath(LICHT_ZELT_SCHNEE, p); }
         if (nacht > .25f) drawGlow(c, 642, 264, 36, 36, WIN_GLOW, .68f * nacht);
 
+        // Meadow grass, knoll under the figure, extras & back/mid grass (drawn before campfire so glow/flames/stones stay in front)
+        p.setColor(WetterLage.alpha(cGrass, .8f)); c.drawPath(LICHT_WIESENGRAS, p);
+        p.setColor(WetterLage.alpha(cHillB, .38f)); c.drawPath(LICHT_KUPPE, p);
+        drawVordergrundExtras(c, lage, L, temp, monat, Landschaften::lichtY, 560, W, LICHT_STEINE, false, 686, 748);
+        p.setColor(cGrassH); c.drawPath(LICHT_GRAS_H, p);
+        p.setColor(cGrass); c.drawPath(LICHT_GRAS_M, p);
+
         // Campfire at (716, 300)
         float fx = 716, fy = 300;
         boolean feuer = lage.tropfen == 0 && !lage.blitz && (nacht > .4f || temp < 14);
@@ -1019,12 +1031,6 @@ final class Landschaften {
                 c.drawCircle(g[0] + (float) Math.sin(t * .9 + g[2]) * 5, g[1] + (float) Math.cos(t * 1.1 + g[2]) * 3, 1.5f, p);
             }
         }
-        // Meadow grass, knoll under the figure, extras & back/mid grass
-        p.setColor(WetterLage.alpha(cGrass, .8f)); c.drawPath(LICHT_WIESENGRAS, p);
-        p.setColor(WetterLage.alpha(cHillB, .38f)); c.drawPath(LICHT_KUPPE, p);
-        drawVordergrundExtras(c, lage, L, temp, monat, Landschaften::lichtY, 560, W, LICHT_STEINE, false);
-        p.setColor(cGrassH); c.drawPath(LICHT_GRAS_H, p);
-        p.setColor(cGrass); c.drawPath(LICHT_GRAS_M, p);
     }
 
     private void drawReh(Canvas c, float x, float y, float flip, boolean alert) {
@@ -1375,11 +1381,19 @@ final class Landschaften {
 
     private void drawVordergrundExtras(Canvas c, WetterLage lage, WetterLage.Licht L, double temp, int monat,
                                        YFn yAt, float x0, float x1, float[][] steine, boolean keineBlumen) {
+        drawVordergrundExtras(c, lage, L, temp, monat, yAt, x0, x1, steine, keineBlumen, 0f, -1f);
+    }
+
+    private void drawVordergrundExtras(Canvas c, WetterLage lage, WetterLage.Licht L, double temp, int monat,
+                                       YFn yAt, float x0, float x1, float[][] steine, boolean keineBlumen,
+                                       float gap2A, float gap2B) {
+        boolean hasG2 = gap2B > gap2A;
         if ("snowy-rainy".equals(lage.cond)) {
             float[][] sl = {{.08f, 22, 40}, {.3f, 14, 28}, {.6f, 18, 34}, {.93f, 8, 30}};
             p.setColor(0xBFFFFFFF);
             for (float[] s : sl) {
                 float sx = x0 + (x1 - x0) * s[0], sy = yAt.at(sx) + s[1];
+                if (hasG2 && sx > gap2A && sx < gap2B) continue;
                 r.set(sx - s[2], sy - s[2] * .16f, sx + s[2], sy + s[2] * .16f);
                 c.drawOval(r, p);
             }
@@ -1389,6 +1403,7 @@ final class Landschaften {
             p.setColor(cPfuetze);
             for (float[] s : pf) {
                 float sx = x0 + (x1 - x0) * s[0], sy = yAt.at(sx) + s[1];
+                if (hasG2 && sx > gap2A && sx < gap2B) continue;
                 r.set(sx - s[2], sy - s[2] * .18f, sx + s[2], sy + s[2] * .18f);
                 c.drawOval(r, p);
             }
@@ -1411,6 +1426,7 @@ final class Landschaften {
             int[] bc = {0xFFF4E27A, 0xFFF2F2F2, 0xFFE88FB0};
             for (float[] b : BLUMEN_XY) {
                 float bx = x0 + b[0] * (x1 - x0), by = yAt.at(bx) + b[1];
+                if (hasG2 && bx > gap2A && bx < gap2B) continue;
                 p.setColor(bc[(int) b[2]]);
                 c.drawCircle(bx, by, 1.7f, p);
             }
@@ -1419,6 +1435,7 @@ final class Landschaften {
             p.setColor(0xE6F0F6FC);
             for (float[] h : HAGEL_XY) {
                 float hx = x0 + h[0] * (x1 - x0), hy = yAt.at(hx) + h[1];
+                if (hasG2 && hx > gap2A && hx < gap2B) continue;
                 c.drawCircle(hx, hy, h[2], p);
             }
         }
