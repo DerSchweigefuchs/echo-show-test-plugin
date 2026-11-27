@@ -46,6 +46,7 @@ final class SchonerDaten {
         int farbe = 0xFFA99CF0;
         long zeit;       // epoch ms (0 if subtitle is static text)
         boolean warnung; // shown before regular notifications
+        String wifiQr = "";
     }
 
     static final class Musik {
@@ -175,10 +176,74 @@ final class SchonerDaten {
         return new Object[] {warn, musik};
     }
 
+    /** Parses echo_show/schoner/zusatz response ({cards: [{typ, titel, unter, farbe, icon, wifi_qr?}]}). */
+    static List<Hinweis> zusatzLesen(Object data) {
+        List<Hinweis> out = new ArrayList<>();
+        if (!(data instanceof Map)) return out;
+        Object raw = ((Map<?, ?>) data).get("cards");
+        if (!(raw instanceof List)) return out;
+        for (Object item : (List<?>) raw) {
+            if (!(item instanceof Map)) continue;
+            Map<?, ?> cm = (Map<?, ?>) item;
+            String titel = sauberMd(str(cm.get("titel")));
+            if (titel.isEmpty()) continue;
+            String typ = str(cm.get("typ")).trim().toLowerCase(Locale.ROOT);
+            Hinweis h = new Hinweis();
+            h.id = "zusatz_" + typ;
+            h.titel = titel;
+            h.unter = sauberMd(str(cm.get("unter")));
+            String ic = str(cm.get("icon")).trim();
+            h.icon = ic.isEmpty() ? defaultTypIcon(typ) : (ic.startsWith("mdi:") ? ic : "mdi:" + ic);
+            h.farbe = farbeInt(cm.get("farbe"), defaultTypFarbe(typ));
+            h.wifiQr = str(cm.get("wifi_qr")).trim();
+            out.add(h);
+        }
+        return out;
+    }
+
+    private static String defaultTypIcon(String typ) {
+        switch (typ) {
+            case "muell": return "mdi:trash-can-outline";
+            case "kalender": return "mdi:calendar-clock";
+            case "einkaufsliste": return "mdi:cart-outline";
+            case "gaeste_wlan": return "mdi:qrcode";
+            default: return "mdi:bell-outline";
+        }
+    }
+
+    private static int defaultTypFarbe(String typ) {
+        switch (typ) {
+            case "muell": return 0xFFA06E46;
+            case "kalender": return 0xFF6FB3F2;
+            case "einkaufsliste": return 0xFF8BC34A;
+            case "gaeste_wlan": return 0xFF4DB6E6;
+            default: return 0xFFA99CF0;
+        }
+    }
+
+    private static int farbeInt(Object raw, int fallback) {
+        if (raw instanceof Number) return ((Number) raw).intValue() | 0xFF000000;
+        if (raw instanceof String) {
+            String s = ((String) raw).trim();
+            if (s.startsWith("#")) s = s.substring(1);
+            try {
+                if (s.length() == 6) return (int) (0xFF000000L | Long.parseLong(s, 16));
+                if (s.length() == 8) return (int) Long.parseLong(s, 16);
+            } catch (NumberFormatException ignored) {}
+        }
+        return fallback;
+    }
+
     /** Combines warnings (first) and persistent notifications (newest first) into an immutable snapshot. */
     static Zustand zusammen(List<Hinweis> warnungen, Map<String, Hinweis> notifs, Musik musik) {
+        return zusammen(warnungen, null, notifs, musik);
+    }
+
+    /** Combines warnings, extra screensaver cards and persistent notifications into an immutable snapshot. */
+    static Zustand zusammen(List<Hinweis> warnungen, List<Hinweis> zusatz, Map<String, Hinweis> notifs, Musik musik) {
         List<Hinweis> alle = new ArrayList<>();
         if (warnungen != null) alle.addAll(warnungen);
+        if (zusatz != null) alle.addAll(zusatz);
         List<Hinweis> rest = new ArrayList<>(notifs.values());
         Collections.sort(rest, new Comparator<Hinweis>() {
             @Override public int compare(Hinweis a, Hinweis b) {

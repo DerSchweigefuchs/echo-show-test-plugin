@@ -3,6 +3,7 @@ package echoshow.kiosktest;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
 import android.os.Debug;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,6 +14,8 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
@@ -33,17 +36,11 @@ import me.jxl.kiosk.plugins.OverlaySpec;
 import me.jxl.kiosk.plugins.PluginHost;
 
 /**
- * Prototype: native full-screen test views to compare with the Lovelace layers on the Echo Show.
+ * Native Echo Show views and "Wetterszene" screensaver plugin for Kiosk Satellite.
  *
- * Opened by ks://plugin/echo-show-test/zeigen/<kalender|timer|liste|anwesenheit>[/<param>] or by the echo_show
- * integration's view requests (echo_show/ansicht/abo) for the pages test-kalender, test-timer, test-liste and
- * test-anwesenheit only.
- * Every other page is ignored without an answer, so the real Lovelace pages are never touched. The answers
- * (echo_show/ansicht/melden "bereit" / "gezeigt") carry the times measured on the device.
- *
- * Home Assistant is only read: calendar.get_events with return_response, a render_template over the person domain and
- * history/history_during_period. Lifecycle callbacks run on the plugin worker;
- * the view callbacks (sichtbar, inhaltFertig, beendet, ...) on the main thread, so shared state is synchronized.
+ * Opened by ks://plugin/echo-show-test/zeigen/<view>[/<param>] or by the echo_show integration's view requests
+ * (echo_show/ansicht/abo) for all 11 native views. Lifecycle callbacks run on the plugin worker; the view callbacks
+ * (sichtbar, inhaltFertig, beendet, ...) run on the main thread, so shared state is synchronized.
  */
 public final class EchoShowTestPlugin implements KioskPlugin {
     static final String OVERLAY = "ansicht";
@@ -55,20 +52,25 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     static final String SCHONER_INFO = "schoner_info";
     static final String NEWS = "news_abo";
     static final String TIMER = "timer_abo";
-    private static final String[] ANSICHTEN = {"kalender", "timer", "liste", "anwesenheit", "wetter", "schoner", "morgen"};
+    static final String KONFIG_ABO = "echo_show_changed";
+    private static final String[] ANSICHTEN = {
+        "kalender", "timer", "anwesenheit", "wetter", "schoner", "morgen",
+        "player", "waschmaschine", "gaeste-wlan", "einkaufsliste", "muell", "server"
+    };
+    private static final List<String> NATIV_SEITEN = Collections.unmodifiableList(Arrays.asList(
+        "wetter", "kalender", "timer", "anwesenheit", "morgen",
+        "player", "waschmaschine", "waschmaschine-verlauf",
+        "gaeste-wlan", "einkaufsliste", "muell", "server", "server-dienste"
+    ));
     private static final long VERLAUF_GUELTIG = 300_000L;   // like the dashboard page: reload after 5 minutes
 
     private volatile PluginHost host;
     private Handler main;   // created on first use
 
-    // settings
+    // settings (KS plugin settings + live HA panel config sync)
     private volatile boolean abo = true;
     private volatile String dashboard = "/echo-show/";
-    private volatile String kalender = "all";
-    private volatile int timerSekunden = 300;
-    private volatile boolean timerFluessig;
     private volatile String uebergang = "keine";
-    private volatile String personen = "alle";
     private volatile boolean verlaufCache = true;
     private volatile String wetterEntity = "";
     private volatile String szeneOrt = "auto";
@@ -83,6 +85,16 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private volatile boolean meinTagAuto = true;
     private volatile boolean vorlesenAuto = true;
 
+    // live HA panel config (echo_show/plugin/konfig + echo_show_changed)
+    private volatile Map<?, ?> konfigDaten;
+    private volatile String haWetterEntity = "", haWetterName = "", haPersonen = "alle", haMusikAusschluss = "";
+    private volatile List<String> haSzeneOrte;
+    private volatile String haSzeneWechsel = "taeglich", haSzeneFest = "";
+    private volatile boolean haSzeneSterne = true, haSzeneNamen = true, haSzeneBlitze = true, haSzeneFigur = true, haSzeneTiere = true;
+    private volatile Object haEinkaufsKonfig;
+    private volatile Typeface caveatTypeface;
+    private volatile boolean caveatGeladen;
+
     // weather data (live render_template), screensaver / screen for the scene's pause
     private volatile WetterLage.Daten wetterDaten;
     private volatile boolean schonerAktiv, bildschirmAus;
@@ -91,6 +103,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Object schonerLock = new Object();
     private final Map<String, SchonerDaten.Hinweis> schonerNotifs = new LinkedHashMap<>();
     private List<SchonerDaten.Hinweis> schonerWarnungen = Collections.emptyList();
+    private List<SchonerDaten.Hinweis> schonerZusatz = Collections.emptyList();
     private SchonerDaten.Musik schonerMusik;
     private volatile SchonerDaten.Zustand schonerZustand = new SchonerDaten.Zustand();
     private volatile String haBasisUrl = "", coverGeladenUrl = "", coverLadeUrl = "";
@@ -98,14 +111,25 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private ExecutorService coverLader;
     private WetterView schonerView;   // active KS native screensaver view, guarded by this
 
-    // "Mein Tag" and live news reading (echo_show/news/subscribe) + 4-image article cache
+    // shared 4-entry caches for article / player cover / guest Wi-Fi images
+    private interface BildCallback {
+        void fertig(Bitmap scharf, Bitmap weich);
+    }
+    private static final class BildAnfrage {
+        final String url;
+        final boolean mitWeich;
+        final BildCallback cb;
+        BildAnfrage(String url, boolean mitWeich, BildCallback cb) { this.url = url; this.mitWeich = mitWeich; this.cb = cb; }
+    }
+    private final Object bildLock = new Object();
+    private final LinkedHashMap<String, Bitmap[]> bildCache = new LinkedHashMap<>();
+    private final Set<String> bildLade = new HashSet<>();
+    private final List<BildAnfrage> bildWartend = new ArrayList<>();
+
+    // "Mein Tag" and live news reading (echo_show/news/subscribe)
     private volatile MorgenDaten.NewsStatus newsStatus = new MorgenDaten.NewsStatus();
     private volatile TimerDaten.Zustand timerZustand = new TimerDaten.Zustand();
     private volatile boolean morgenAutoOffen;
-    private final Object artikelLock = new Object();
-    private final LinkedHashMap<String, Bitmap[]> artikelBilder = new LinkedHashMap<>();
-    private final Set<String> artikelLade = new HashSet<>();
-    private final Set<String> artikelWartend = new HashSet<>();
     private final Runnable morgenAutoZu = () -> TestAnsicht.sicher(this::morgenAutoSchliessen);
 
     private void morgenAutoSchliessen() {
@@ -149,6 +173,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo aboSchonerInfo = new Dauerabo(SCHONER_INFO, zeit, melder);
     private final Dauerabo aboNews = new Dauerabo(NEWS, zeit, melder);
     private final Dauerabo aboTimer = new Dauerabo(TIMER, zeit, melder);
+    private final Dauerabo aboChanged = new Dauerabo(KONFIG_ABO, zeit, melder);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
 
@@ -165,13 +190,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     @Override public void configure(Map<String, Object> s) {
         abo = !Boolean.FALSE.equals(s.get("abo"));
         dashboard = norm(text(s.get("dashboard"), "/echo-show/"));
-        kalender = text(s.get("kalender"), "all");
-        Object sek = s.get("timerSekunden");
-        timerSekunden = sek instanceof Number ? Math.max(5, Math.min(3600, ((Number) sek).intValue())) : 300;
-        timerFluessig = "flüssig".equals(s.get("timerModus"));
         uebergang = text(s.get("uebergang"), "keine");
-        personen = text(s.get("personen"), "alle");
-        verlaufCache = !Boolean.FALSE.equals(s.get("verlaufCache"));
         aboAbgleichen();
         personenAbgleichen();
         wetterEntity = text(s.get("wetterEntity"), "");
@@ -201,9 +220,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         schonerAbgleichen();
         newsAbgleichen();
         timerAbgleichen();
+        konfigAbgleichen();
         schonerOptionenMelden(opt);
-        szeneOrtMelden(szeneOrt);
-        vorschauMelden();
+        konfigPushAnOffene();
         status();
     }
 
@@ -211,22 +230,32 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         List<String> args = args(arguments);
         switch (command) {
             case "zeigen": {
-                String name = args.isEmpty() ? "kalender" : ansicht(args.get(0));
+                String raw = args.isEmpty() ? "kalender" : args.get(0);
+                String name = ansicht(raw);
                 if (name == null) {
                     PluginHost h = host;
-                    if (h != null) h.status("Unbekannte Ansicht. Erlaubt: kalender, timer, liste, anwesenheit, wetter, schoner, morgen", true);
+                    if (h != null) h.status("Unbekannte Ansicht: " + raw, true);
                     return;
                 }
-                oeffnen(name, null, false, linkParam(name, args.size() > 1 ? args.subList(1, args.size()) : Collections.<String>emptyList()), "Befehl");
+                Map<String, Object> lp = linkParam(name, args.size() > 1 ? args.subList(1, args.size()) : Collections.<String>emptyList());
+                aliasParam(raw, lp);
+                oeffnen(name, null, false, lp, "Befehl");
                 return;
             }
+            case "gaestewlan":
+                oeffnen("gaeste-wlan", null, false, linkParam("gaeste-wlan", args), "Befehl");
+                return;
             case "kalender":
             case "timer":
-            case "liste":
             case "anwesenheit":
             case "wetter":
             case "schoner":
             case "morgen":
+            case "player":
+            case "waschmaschine":
+            case "einkaufsliste":
+            case "muell":
+            case "server":
                 oeffnen(command, null, false, linkParam(command, args), "Befehl");
                 return;
             case "schliessen":
@@ -245,10 +274,12 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         else if (("ks.ha.subscription." + SCHONER_INFO).equals(event)) schonerInfoEreignis(payload);
         else if (("ks.ha.subscription." + NEWS).equals(event)) newsEreignis(payload);
         else if (("ks.ha.subscription." + TIMER).equals(event)) timerEreignis(payload);
+        else if (("ks.ha.subscription." + KONFIG_ABO).equals(event)) changedEreignis(payload);
         else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
             if ("ks.screensaver.state".equals(event)) {
                 schonerEventDa = true;
                 schonerAktiv = Boolean.TRUE.equals(payload.get("active"));
+                if (schonerAktiv) schonerZusatzLaden();
             } else {
                 bildschirmEventDa = true;
                 bildschirmAus = Boolean.FALSE.equals(payload.get("on"));
@@ -273,17 +304,18 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboSchonerInfo.stop();
         aboNews.stop();
         aboTimer.stop();
+        aboChanged.stop();
         morgenAutoOffen = false;
         if (main != null) main.removeCallbacks(morgenAutoZu);
-        synchronized (artikelLock) {
-            for (Bitmap[] pair : artikelBilder.values()) {
+        synchronized (bildLock) {
+            for (Bitmap[] pair : bildCache.values()) {
                 if (pair != null) {
                     for (Bitmap b : pair) if (b != null && !b.isRecycled()) b.recycle();
                 }
             }
-            artikelBilder.clear();
-            artikelLade.clear();
-            artikelWartend.clear();
+            bildCache.clear();
+            bildLade.clear();
+            bildWartend.clear();
         }
         ExecutorService cl;
         synchronized (this) {
@@ -293,6 +325,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (cl != null) cl.shutdownNow();
         coverGeladenUrl = coverLadeUrl = "";
         coverBitmap = null;
+        caveatTypeface = null;
+        caveatGeladen = false;
+        konfigDaten = null;
         try {
             WetterView.beenden();   // end the layer build thread, give the weather bitmaps back
         } catch (RuntimeException | LinkageError ignored) {
@@ -315,6 +350,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             msg = new LinkedHashMap<>();
             msg.put("type", "echo_show/ansicht/abo");
             msg.put("dashboard", soll);
+            msg.put("nativ_seiten", NATIV_SEITEN);
         }
         if (soll == null) {
             aboStatus = "Abo aus";
@@ -333,6 +369,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             status();
         } else {
             if (fehler && abo == aboPersonen) personenFehler("Personen nicht lesbar: " + text);
+            if (!fehler && abo == aboChanged) {
+                konfigLaden();
+                schonerZusatzLaden();
+            }
             PluginHost h = host;
             if (h != null) {
                 try { h.log(abo.key + ": " + text); } catch (RuntimeException ignored) {}
@@ -346,19 +386,32 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             Object ev = p.get("event");
             if (!(ev instanceof Map)) return;
             Map<?, ?> e = (Map<?, ?>) ev;
-            if (!"vorbau".equals(e.get("aktion"))) return;
+            Object aktion = e.get("aktion");
+            if ("schliessen".equals(aktion)) {
+                Object seiteObj = e.get("seite");
+                String ziel = seiteObj instanceof String ? ansicht((String) seiteObj) : null;
+                boolean passt;
+                synchronized (this) {
+                    passt = aktuell != null && (ziel == null || ziel.equals(aktuell.m.ansicht));
+                }
+                if (passt) schliessen();
+                return;
+            }
+            if (!"vorbau".equals(aktion)) return;
             Object seite = e.get("seite"), token = e.get("token");
             // Handle test-* pages and explicit native view requests (nativ: true from echo_show LLM/view router)
             if (!(seite instanceof String) || !(token instanceof String)) return;
             String sName = (String) seite;
             boolean nativ = Boolean.TRUE.equals(e.get("nativ"));
             if (!sName.startsWith("test-") && !nativ) return;
-            String name = ansicht(sName.startsWith("test-") ? sName.substring(5) : sName);
+            String ohneTest = sName.startsWith("test-") ? sName.substring(5) : sName;
+            String name = ansicht(ohneTest);
             if (name == null) return;
             Map<String, Object> param = new LinkedHashMap<>();
             if (e.get("param") instanceof Map) {
                 for (Map.Entry<?, ?> x : ((Map<?, ?>) e.get("param")).entrySet()) param.put(String.valueOf(x.getKey()), x.getValue());
             }
+            aliasParam(ohneTest, param);
             oeffnen(name, (String) token, Boolean.TRUE.equals(e.get("kalt")), param, "HA");
         } else {
             aboAnsicht.ereignis(p);   // ended -> resubscribes with a backoff; resubscribed / disconnected -> state
@@ -371,10 +424,10 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         long t0 = SystemClock.uptimeMillis();
         PluginHost h = host;
         if (h == null) return;
-        int sek = timerSekunden;
+        int sek = 300;
         Object ps = param.get("sekunden");
         if ("timer".equals(ansicht) && ps instanceof Number) sek = Math.max(1, Math.min(86400, ((Number) ps).intValue()));
-        Messung m = new Messung(ansicht, token, quelle, kalt, param, t0, sek, timerFluessig);
+        Messung m = new Messung(ansicht, token, quelle, kalt, param, t0, sek, false);
         if (h.isHeadless()) {
             melden(m, "bereit", fehler("kein Bildschirm"));
             return;
@@ -384,11 +437,18 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         ramLesen(m, true, a);
         if ("kalender".equals(ansicht)) kalenderLaden(h, a);
         else if ("anwesenheit".equals(ansicht)) anwesenheitLaden(a);
+        else if ("player".equals(ansicht)) ansichtDatenLaden(a, wsMsg("echo_show/musik/daten", "dashboard", dashboard));
+        else if ("waschmaschine".equals(ansicht)) ansichtDatenLaden(a, wsMsg("echo_show/waschmaschine/daten"));
+        else if ("gaeste-wlan".equals(ansicht)) ansichtDatenLaden(a, wsMsg("echo_show/gaeste_wlan/daten"));
+        else if ("einkaufsliste".equals(ansicht)) einkaufslisteLaden(a);
+        else if ("muell".equals(ansicht)) ansichtDatenLaden(a, wsMsg("echo_show/muell/daten"));
+        else if ("server".equals(ansicht)) ansichtDatenLaden(a, wsMsg("echo_show/server/daten"));
         else if ("wetter".equals(ansicht) || "schoner".equals(ansicht) || "morgen".equals(ansicht)) {
             if ("morgen".equals(ansicht)) {
                 if (main != null) main.removeCallbacks(morgenAutoZu);
                 if (!"HA-Auto".equals(quelle)) morgenAutoOffen = false;
             }
+            if ("schoner".equals(ansicht)) schonerZusatzLaden();
             WetterLage.Daten wd = wetterDaten;
             if (wd != null) {
                 m.wetter = wd;
@@ -401,6 +461,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 bildschirmAufwecken(h);
             }
             h.showOverlay(OVERLAY, spec(), a);
+            meldenStatus(m, "offen", offenDaten(m));
         } catch (RuntimeException e) {   // older KS, rate limit or stopped session
             synchronized (this) { if (aktuell == a) aktuell = null; }
             melden(m, "bereit", fehler("Overlay: " + e.getMessage()));
@@ -447,11 +508,12 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (h == null) return;
         Messung m = a.m;
         try {
-            h.haCall(Kalender.anfrage(kalender, start, tageAnzahl), (ok, data, error) -> {
+            h.haCall(Kalender.anfrageEcho(start, tageAnzahl), (ok, data, error) -> {
                 if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
                 if (ok) {
                     try {
-                        m.termine = Kalender.lesenEreignisse(data);
+                        m.kalenderErgebnis = Kalender.lesenEchoDaten(data);
+                        m.termine = m.kalenderErgebnis != null ? m.kalenderErgebnis.termine : Collections.<Kalender.Termin>emptyList();
                         m.datenFehler = null;
                     } catch (RuntimeException e) {
                         m.datenFehler = "Antwort unlesbar";
@@ -468,13 +530,91 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
     }
 
+    /** Loads JSON data for one of the native HA-WS views (player, waschmaschine, gaeste-wlan, muell, server). */
+    private void ansichtDatenLaden(TestAnsicht a, Map<String, Object> msg) {
+        PluginHost h = host;
+        if (h == null) return;
+        Messung m = a.m;
+        try {
+            h.haCall(msg, (ok, data, error) -> {
+                if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
+                if (ok) {
+                    m.ansichtDaten = data;
+                    m.datenFehler = null;
+                } else {
+                    m.datenFehler = error == null ? "unbekannt" : error;
+                }
+                main().post(() -> TestAnsicht.sicher(a::datenDa));
+            });
+        } catch (RuntimeException e) {
+            if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
+            m.datenFehler = "haCall: " + e.getMessage();
+            main().post(() -> TestAnsicht.sicher(a::datenDa));
+        }
+    }
+
+    /** Loads shopping list config (from cached plugin/konfig or HA) + purchase history (echo_show/einkauf/verlauf). */
+    private void einkaufslisteLaden(TestAnsicht a) {
+        PluginHost h = host;
+        if (h == null) return;
+        Messung m = a.m;
+        Object ek = haEinkaufsKonfig != null ? haEinkaufsKonfig : konfigDaten;
+        if (ek != null) {
+            m.ansichtDaten = ek;
+        } else {
+            try {
+                h.haCall(wsMsg("echo_show/plugin/konfig", "dashboard", dashboard), (ok, data, error) -> {
+                    if (ok && data instanceof Map) {
+                        konfigAnwenden((Map<?, ?>) data);
+                        m.ansichtDaten = haEinkaufsKonfig != null ? haEinkaufsKonfig : data;
+                    } else if (!ok && m.ansichtDaten == null) {
+                        m.datenFehler = error == null ? "unbekannt" : error;
+                    }
+                    if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
+                    main().post(() -> TestAnsicht.sicher(a::datenDa));
+                });
+            } catch (RuntimeException ignored) {}
+        }
+        try {
+            h.haCall(wsMsg("echo_show/einkauf/verlauf"), (ok, data, error) -> {
+                if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
+                if (ok) m.ansichtZusatz = data;
+                main().post(() -> TestAnsicht.sicher(a::datenDa));
+            });
+        } catch (RuntimeException ignored) {
+            if (m.tDaten == 0) m.tDaten = SystemClock.uptimeMillis();
+            main().post(() -> TestAnsicht.sicher(a::datenDa));
+        }
+    }
+
+    /** Forwards any HA WebSocket call (service call or integration WS command) from interactive native views. */
+    void haCallWeiterleiten(Map<String, Object> msg, HaAntwort cb) {
+        PluginHost h = host;
+        if (h == null || msg == null) {
+            if (cb != null) main().post(() -> TestAnsicht.sicher(() -> cb.fertig(false, null, "nicht verbunden")));
+            return;
+        }
+        try {
+            h.haCall(msg, (ok, data, err) -> {
+                if (cb != null) main().post(() -> TestAnsicht.sicher(() -> cb.fertig(ok, data, err)));
+            });
+        } catch (RuntimeException e) {
+            if (cb != null) main().post(() -> TestAnsicht.sicher(() -> cb.fertig(false, null, e.getMessage())));
+        }
+    }
+
+    interface HaAntwort {
+        void fertig(boolean ok, Object data, String err);
+    }
+
     // ---- presence: people subscription and history ---------------------------------------------------------------
 
     /** Keeps one render_template subscription over the person domain, like the dashboard's live states. */
     private void personenAbgleichen() {
         PluginHost h = host;
         if (h == null) return;
-        Map<String, Object> msg = h.isHeadless() ? null : Anwesenheit.personenAbo(Anwesenheit.ids(personen));
+        String pList = haPersonen;
+        Map<String, Object> msg = h.isHeadless() ? null : Anwesenheit.personenAbo(Anwesenheit.ids(pList));
         String soll = msg == null ? null : (String) msg.get("template");
         if (!(soll == null ? personenAboFuer == null : soll.equals(personenAboFuer))) {
             personenCache = null;   // other people: the cached data no longer fits
@@ -499,7 +639,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (!ev.containsKey("result")) return;
         List<Anwesenheit.Person> ps;
         try {
-            ps = Anwesenheit.personen(ev.get("result"), Anwesenheit.ids(personen), Json::lesen);
+            ps = Anwesenheit.personen(ev.get("result"), Anwesenheit.ids(haPersonen), Json::lesen);
         } catch (RuntimeException e) {
             personenFehler("Personen unlesbar");
             return;
@@ -618,7 +758,8 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private void wetterAbgleichen() {
         PluginHost h = host;
         if (h == null) return;
-        Map<String, Object> msg = h.isHeadless() ? null : WetterLage.abo(wetterEntity);
+        String effEntity = !wetterEntity.isEmpty() ? wetterEntity : haWetterEntity;
+        Map<String, Object> msg = h.isHeadless() ? null : WetterLage.abo(effEntity);
         String soll = msg == null ? null : (String) msg.get("template");
         aboWetter.setzen(h, msg, soll);
         if (h.isHeadless() || zustandAbos) return;
@@ -679,6 +820,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         if (d == null) return;
         wetterDaten = d;
+        WetterView.vorwaermen(d, effektiverOrt(), haSzeneFigur, haSzeneTiere);
         TestAnsicht a;
         WetterView sv;
         synchronized (this) {
@@ -692,6 +834,178 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         main().post(() -> TestAnsicht.sicher(a::datenDa));
     }
 
+    // ---- live HA panel config sync (echo_show/plugin/konfig + echo_show_changed + schoner/zusatz) ------------------
+
+    private void konfigAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        if (h.isHeadless()) {
+            aboChanged.setzen(h, null, null);
+            return;
+        }
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "subscribe_events");
+        msg.put("event_type", "echo_show_changed");
+        aboChanged.setzen(h, msg, "echo_show_changed");
+        konfigLaden();
+        schonerZusatzLaden();
+    }
+
+    private void changedEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboChanged.ereignis(p);
+            return;
+        }
+        konfigLaden();
+        schonerZusatzLaden();
+        TestAnsicht a;
+        synchronized (this) { a = aktuell; }
+        if (a != null) {
+            String ans = a.m.ansicht;
+            if ("player".equals(ans)) ansichtDatenLaden(a, wsMsg("echo_show/musik/daten", "dashboard", dashboard));
+            else if ("waschmaschine".equals(ans)) ansichtDatenLaden(a, wsMsg("echo_show/waschmaschine/daten"));
+            else if ("gaeste-wlan".equals(ans)) ansichtDatenLaden(a, wsMsg("echo_show/gaeste_wlan/daten"));
+            else if ("einkaufsliste".equals(ans)) einkaufslisteLaden(a);
+            else if ("muell".equals(ans)) ansichtDatenLaden(a, wsMsg("echo_show/muell/daten"));
+            else if ("server".equals(ans)) ansichtDatenLaden(a, wsMsg("echo_show/server/daten"));
+            else if ("kalender".equals(ans)) {
+                Calendar st = a.m.kalenderSpanne != null ? a.m.kalenderSpanne.start : Kalender.montag(Calendar.getInstance());
+                int tg = a.m.kalenderSpanne != null ? a.m.kalenderSpanne.tageAnzahl : 7;
+                kalenderBereichLaden(a, st, tg);
+            }
+        }
+    }
+
+    private void konfigLaden() {
+        PluginHost h = host;
+        if (h == null || h.isHeadless()) return;
+        try {
+            h.haCall(wsMsg("echo_show/plugin/konfig", "dashboard", dashboard), (ok, data, error) -> {
+                if (ok && data instanceof Map) konfigAnwenden((Map<?, ?>) data);
+            });
+        } catch (RuntimeException ignored) {}
+    }
+
+    private void konfigAnwenden(Map<?, ?> cfg) {
+        konfigDaten = cfg;
+        String neuWetter = cfg.get("wetter") instanceof String ? ((String) cfg.get("wetter")).trim() : "";
+        String neuWetterName = cfg.get("wetter_name") instanceof String ? ((String) cfg.get("wetter_name")).trim() : "";
+        boolean wetterGeaendert = !neuWetter.equals(haWetterEntity);
+        haWetterEntity = neuWetter;
+        haWetterName = neuWetterName;
+
+        if (cfg.get("szene") instanceof Map) {
+            Map<?, ?> sz = (Map<?, ?>) cfg.get("szene");
+            if (sz.get("orte") instanceof List) {
+                List<String> ol = new ArrayList<>();
+                for (Object o : (List<?>) sz.get("orte")) if (o instanceof String) ol.add(((String) o).trim().toLowerCase(Locale.ROOT));
+                haSzeneOrte = ol;
+            }
+            if (sz.get("wechsel") instanceof String) haSzeneWechsel = ((String) sz.get("wechsel")).trim().toLowerCase(Locale.ROOT);
+            if (sz.get("fest") instanceof String) haSzeneFest = ((String) sz.get("fest")).trim().toLowerCase(Locale.ROOT);
+            if (sz.containsKey("sterne")) haSzeneSterne = !Boolean.FALSE.equals(sz.get("sterne"));
+            if (sz.containsKey("namen")) haSzeneNamen = !Boolean.FALSE.equals(sz.get("namen"));
+            if (sz.containsKey("blitze")) haSzeneBlitze = !Boolean.FALSE.equals(sz.get("blitze"));
+            if (sz.containsKey("figur")) haSzeneFigur = !Boolean.FALSE.equals(sz.get("figur"));
+            if (sz.containsKey("tiere")) haSzeneTiere = !Boolean.FALSE.equals(sz.get("tiere"));
+        }
+
+        if (cfg.get("einkaufsliste") != null) haEinkaufsKonfig = cfg.get("einkaufsliste");
+
+        String neuPersonen = joinCsv(cfg.get("personen"));
+        if (neuPersonen.isEmpty()) neuPersonen = "alle";
+        boolean personenGeaendert = !neuPersonen.equals(haPersonen);
+        haPersonen = neuPersonen;
+
+        String neuMusikExcl = "";
+        if (cfg.get("musik") instanceof Map) {
+            neuMusikExcl = joinCsv(((Map<?, ?>) cfg.get("musik")).get("nie_anbieten"));
+        }
+        boolean musikExclGeaendert = !neuMusikExcl.equals(haMusikAusschluss);
+        haMusikAusschluss = neuMusikExcl;
+
+        if (wetterGeaendert && wetterEntity.isEmpty()) wetterAbgleichen();
+        if (personenGeaendert) personenAbgleichen();
+        if (musikExclGeaendert) schonerAbgleichen();
+        WetterLage.Daten wd = wetterDaten;
+        if (wd != null) WetterView.vorwaermen(wd, effektiverOrt(), haSzeneFigur, haSzeneTiere);
+        konfigPushAnOffene();
+    }
+
+    private static String joinCsv(Object raw) {
+        StringBuilder sb = new StringBuilder();
+        if (raw instanceof List) {
+            for (Object o : (List<?>) raw) {
+                if (o instanceof String && !((String) o).trim().isEmpty()) {
+                    if (sb.length() > 0) sb.append(',');
+                    sb.append(((String) o).trim());
+                }
+            }
+        } else if (raw instanceof String) {
+            sb.append(((String) raw).trim());
+        }
+        return sb.toString();
+    }
+
+    private void konfigPushAnOffene() {
+        WetterView sv;
+        TestAnsicht a;
+        synchronized (this) {
+            sv = schonerView;
+            a = aktuell;
+        }
+        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> konfigAnwenden(sv)));
+        if (a != null) main().post(() -> TestAnsicht.sicher(a::konfigAnwenden));
+    }
+
+    private void schonerZusatzLaden() {
+        PluginHost h = host;
+        if (h == null || h.isHeadless()) return;
+        try {
+            h.haCall(wsMsg("echo_show/schoner/zusatz"), (ok, data, error) -> {
+                if (!ok) return;
+                List<SchonerDaten.Hinweis> neu = SchonerDaten.zusatzLesen(data);
+                SchonerDaten.Zustand z;
+                synchronized (schonerLock) {
+                    schonerZusatz = neu;
+                    z = SchonerDaten.zusammen(schonerWarnungen, schonerZusatz, schonerNotifs, schonerMusik);
+                }
+                schonerZustandMelden(z);
+            });
+        } catch (RuntimeException ignored) {}
+    }
+
+    private String effektiverOrt() {
+        if (vorschauAktiv) return vorschauOrt;
+        if (!"auto".equals(szeneOrt)) return szeneOrt;
+        if ("fest".equals(haSzeneWechsel) && !haSzeneFest.isEmpty()) return haSzeneFest;
+        return "auto";
+    }
+
+    void konfigAnwenden(WetterView v) {
+        if (v == null) return;
+        v.setWetterName(haWetterName);
+        v.setSzeneOptionen(haSzeneOrte, haSzeneSterne, sternbildNamen && haSzeneNamen, haSzeneBlitze, haSzeneFigur, haSzeneTiere);
+        v.setOrt(effektiverOrt());
+        if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
+        else v.setEinstellungsVorschau(false, null, null, null);
+    }
+
+    Object einkaufsKonfig() { return haEinkaufsKonfig != null ? haEinkaufsKonfig : konfigDaten; }
+
+    Typeface caveatTf() {
+        if (caveatGeladen) return caveatTypeface;
+        caveatGeladen = true;
+        PluginHost h = host;
+        if (h != null) {
+            try {
+                String p = h.assetPath("caveat.ttf");
+                if (p != null && !p.isEmpty()) caveatTypeface = Typeface.createFromFile(p);
+            } catch (RuntimeException | LinkageError ignored) {}
+        }
+        return caveatTypeface;
+    }
+
     // ---- native KS screensaver ("Wetterszene") ---------------------------------------------------------------------
 
     private final OverlayFactory schonerFactory = new OverlayFactory() {
@@ -703,8 +1017,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             }, theme, schonerOpt, "live", null, sternbildNamen, false);
             WetterLage.Daten wd = wetterDaten;
             if (wd != null) v.setDaten(wd);
-            v.setOrt(szeneOrt);
-            if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
+            konfigAnwenden(v);
             v.setSchoner(schonerZustand);
             synchronized (EchoShowTestPlugin.this) { schonerView = v; }
             return v.mitVordergrund(ctx);
@@ -732,7 +1045,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         boolean brauchtNotif = !h.isHeadless() && opt.hinweise;
         boolean brauchtInfo = !h.isHeadless() && (opt.hinweise || opt.musik);
         aboSchonerNotif.setzen(h, brauchtNotif ? SchonerDaten.notifAbo() : null, brauchtNotif ? "notif" : null);
-        Map<String, Object> infoMsg = brauchtInfo ? SchonerDaten.infoAbo(schonerMusikAusschluss) : null;
+        String excl = schonerMusikAusschluss;
+        if (!haMusikAusschluss.isEmpty()) excl = excl.isEmpty() ? haMusikAusschluss : excl + "," + haMusikAusschluss;
+        Map<String, Object> infoMsg = brauchtInfo ? SchonerDaten.infoAbo(excl) : null;
         aboSchonerInfo.setzen(h, infoMsg, infoMsg == null ? null : (String) infoMsg.get("template"));
     }
 
@@ -745,7 +1060,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         SchonerDaten.Zustand z;
         synchronized (schonerLock) {
             SchonerDaten.notifEreignis(schonerNotifs, (Map<?, ?>) p.get("event"));
-            z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+            z = SchonerDaten.zusammen(schonerWarnungen, schonerZusatz, schonerNotifs, schonerMusik);
         }
         schonerZustandMelden(z);
     }
@@ -779,7 +1094,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 }
             }
             schonerMusik = m;
-            z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+            z = SchonerDaten.zusammen(schonerWarnungen, schonerZusatz, schonerNotifs, schonerMusik);
         }
         schonerZustandMelden(z);
         if (!neuerCoverUrl.isEmpty()) coverStarten(neuerCoverUrl);
@@ -791,7 +1106,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             url = schonerMusik != null && !schonerMusik.bildUrl.isEmpty() && schonerMusik.cover == null ? schonerMusik.bildUrl : "";
         }
         if (!url.isEmpty()) coverStarten(url);
-        artikelBilderNachladen();
+        wartendeBilderNachladen();
     }
 
     private synchronized ExecutorService coverLader() {
@@ -878,7 +1193,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                         neu.bildUrl = schonerMusik.bildUrl;
                         neu.cover = bm;
                         schonerMusik = neu;
-                        z = SchonerDaten.zusammen(schonerWarnungen, schonerNotifs, schonerMusik);
+                        z = SchonerDaten.zusammen(schonerWarnungen, schonerZusatz, schonerNotifs, schonerMusik);
                     }
                 }
                 if (z != null) schonerZustandMelden(z);
@@ -954,38 +1269,6 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setSchonerOptionen(opt)));
         if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.schonerOptionen(opt)));
-    }
-
-    private void szeneOrtMelden(String ort) {
-        WetterView sv;
-        TestAnsicht a;
-        synchronized (this) {
-            sv = schonerView;
-            a = aktuell != null && ("wetter".equals(aktuell.m.ansicht) || "schoner".equals(aktuell.m.ansicht) || "morgen".equals(aktuell.m.ansicht)) ? aktuell : null;
-        }
-        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> sv.setOrt(ort)));
-        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.szeneOrtSetzen(ort)));
-    }
-
-    private void vorschauMelden() {
-        final boolean ak = vorschauAktiv;
-        final String vo = vorschauOrt, vw = vorschauWetter, vz = vorschauZeit, stdOrt = szeneOrt;
-        WetterView sv;
-        TestAnsicht a;
-        synchronized (this) {
-            sv = schonerView;
-            a = aktuell != null && ("wetter".equals(aktuell.m.ansicht) || "schoner".equals(aktuell.m.ansicht) || "morgen".equals(aktuell.m.ansicht)) ? aktuell : null;
-        }
-        if (sv != null) main().post(() -> TestAnsicht.sicher(() -> {
-            sv.setOrt(ak ? vo : stdOrt);
-            sv.setEinstellungsVorschau(ak, vo, vw, vz);
-        }));
-        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.vorschauSetzen(ak, ak ? vo : stdOrt, vw, vz)));
-    }
-
-    void vorschauAnwenden(WetterView v) {
-        v.setOrt(vorschauAktiv ? vorschauOrt : szeneOrt);
-        if (vorschauAktiv) v.setEinstellungsVorschau(true, vorschauOrt, vorschauWetter, vorschauZeit);
     }
 
     private static String wetterKey(String label) {
@@ -1140,18 +1423,44 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         } catch (RuntimeException ignored) {}
     }
 
-    /** Downloads an article thumbnail (/api/echo_show/news/bild/<key>) into a crisp 512 px bitmap + 48x27 blurred backdrop. */
+    /** Downloads an article thumbnail (/api/echo_show/news/bild/<key>) into a crisp 512 px bitmap + 20x12 blurred backdrop. */
     void artikelBildLaden(final String rohUrl) {
-        if (rohUrl == null || rohUrl.isEmpty()) return;
+        bildLaden(rohUrl, true, (s, w) -> {
+            TestAnsicht a;
+            synchronized (this) { a = aktuell != null && "morgen".equals(aktuell.m.ansicht) ? aktuell : null; }
+            if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.morgenBildSetzen(rohUrl, s, w)));
+        });
+    }
+
+    /** Downloads a player album cover into a crisp 512 px bitmap + 20x12 blurred backdrop. */
+    void playerCoverLaden(final String rohUrl) {
+        bildLaden(rohUrl, true, (s, w) -> {
+            TestAnsicht a;
+            synchronized (this) { a = aktuell != null && "player".equals(aktuell.m.ansicht) ? aktuell : null; }
+            if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.playerCoverSetzen(rohUrl, s, w)));
+        });
+    }
+
+    /** Downloads a guest Wi-Fi QR image fallback (single bitmap). */
+    void gaesteBildLaden(final String rohUrl) {
+        bildLaden(rohUrl, false, (s, w) -> {
+            TestAnsicht a;
+            synchronized (this) { a = aktuell != null && "gaeste-wlan".equals(aktuell.m.ansicht) ? aktuell : null; }
+            if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.gaesteBildSetzen(rohUrl, s)));
+        });
+    }
+
+    private void bildLaden(final String rohUrl, final boolean mitWeich, final BildCallback cb) {
+        if (rohUrl == null || rohUrl.isEmpty() || cb == null) return;
+        final String cacheKey = (mitWeich ? "2:" : "1:") + rohUrl;
         Bitmap[] cached;
-        synchronized (artikelLock) {
-            cached = artikelBilder.get(rohUrl);
+        synchronized (bildLock) {
+            cached = bildCache.get(cacheKey);
             if (cached != null && cached[0] != null && !cached[0].isRecycled()) {
-                final Bitmap s = cached[0], w = cached[1];
-                artikelBildMelden(rohUrl, s, w);
+                cb.fertig(cached[0], cached[1]);
                 return;
             }
-            if (artikelLade.contains(rohUrl)) return;
+            if (bildLade.contains(cacheKey)) return;
         }
         String vollUrl;
         if (rohUrl.startsWith("http://") || rohUrl.startsWith("https://")) {
@@ -1159,7 +1468,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         } else if (rohUrl.startsWith("/")) {
             String basis = haBasisUrl;
             if (basis.isEmpty()) {
-                synchronized (artikelLock) { artikelWartend.add(rohUrl); }
+                synchronized (bildLock) { bildWartend.add(new BildAnfrage(rohUrl, mitWeich, cb)); }
                 PluginHost h = host;
                 if (h != null) {
                     Map<String, Object> msg = new LinkedHashMap<>();
@@ -1186,51 +1495,43 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             return;
         }
 
-        synchronized (artikelLock) {
-            if (artikelLade.contains(rohUrl)) return;
-            artikelLade.add(rohUrl);
+        synchronized (bildLock) {
+            if (bildLade.contains(cacheKey)) return;
+            bildLade.add(cacheKey);
         }
         final String target = vollUrl;
         try {
             coverLader().execute(() -> {
-                Bitmap[] pair = artikelDownload(target);
-                synchronized (artikelLock) {
-                    artikelLade.remove(rohUrl);
+                Bitmap[] pair = bildDownload(target, mitWeich);
+                synchronized (bildLock) {
+                    bildLade.remove(cacheKey);
                     if (pair == null) return;
-                    artikelBilder.put(rohUrl, pair);
-                    while (artikelBilder.size() > 4) {
-                        Iterator<Map.Entry<String, Bitmap[]>> it = artikelBilder.entrySet().iterator();
+                    bildCache.put(cacheKey, pair);
+                    while (bildCache.size() > 6) {
+                        Iterator<Map.Entry<String, Bitmap[]>> it = bildCache.entrySet().iterator();
                         if (!it.hasNext()) break;
                         it.next();
                         it.remove();
                     }
                 }
-                artikelBildMelden(rohUrl, pair[0], pair[1]);
+                cb.fertig(pair[0], pair[1]);
             });
         } catch (RuntimeException ignored) {
-            synchronized (artikelLock) { artikelLade.remove(rohUrl); }
+            synchronized (bildLock) { bildLade.remove(cacheKey); }
         }
     }
 
-    private void artikelBilderNachladen() {
-        List<String> todo;
-        synchronized (artikelLock) {
-            if (artikelWartend.isEmpty()) return;
-            todo = new LinkedList<>(artikelWartend);
-            artikelWartend.clear();
+    private void wartendeBilderNachladen() {
+        List<BildAnfrage> todo;
+        synchronized (bildLock) {
+            if (bildWartend.isEmpty()) return;
+            todo = new LinkedList<>(bildWartend);
+            bildWartend.clear();
         }
-        for (String u : todo) artikelBildLaden(u);
+        for (BildAnfrage b : todo) bildLaden(b.url, b.mitWeich, b.cb);
     }
 
-    private void artikelBildMelden(String url, Bitmap scharf, Bitmap weich) {
-        TestAnsicht a;
-        synchronized (this) {
-            a = aktuell != null && "morgen".equals(aktuell.m.ansicht) ? aktuell : null;
-        }
-        if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.morgenBildSetzen(url, scharf, weich)));
-    }
-
-    private static Bitmap[] artikelDownload(String vollUrl) {
+    private static Bitmap[] bildDownload(String vollUrl, boolean mitWeich) {
         HttpURLConnection con = null;
         try {
             con = (HttpURLConnection) new URL(vollUrl).openConnection();
@@ -1260,7 +1561,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             Bitmap scharf = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
             if (scharf == null) return null;
             // Tiny 20x12 copy: GPU bilinear upscaling produces a silky zero-CPU-cost Gaussian blur backdrop
-            Bitmap weich = Bitmap.createScaledBitmap(scharf, 20, 12, true);
+            Bitmap weich = mitWeich ? Bitmap.createScaledBitmap(scharf, 20, 12, true) : null;
             return new Bitmap[] {scharf, weich};
         } catch (Exception ignored) {
             return null;
@@ -1322,14 +1623,6 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         main().postDelayed(() -> TestAnsicht.sicher(() -> ramLesen(m, false, a)), 2000);
     }
 
-    /** Main thread: the list's auto scroll ran down and up once. */
-    void scrollFertig(TestAnsicht a, int frames, int ruckler, long maxMs) {
-        synchronized (this) {
-            zeile(String.format(Locale.ROOT, "%s Auto-Scroll: Ruckler %d von %d Frames, max %d ms", uhr(), ruckler, frames, maxMs));
-        }
-        status();
-    }
-
     /** Main thread, 5 s after "bereit": the scene's figures over full one-second windows, into the status. */
     void szeneNachtrag(TestAnsicht a) {
         Map<String, Object> sz = a.m.szene5;
@@ -1359,13 +1652,25 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                     sz.get("cpu_fehler") != null ? ", " + sz.get("cpu_fehler") : ""));
             }
         }
+        if (!m.geschlossenGemeldet) {
+            m.geschlossenGemeldet = true;
+            meldenStatus(m, "geschlossen", geschlossenDaten(m));
+        }
         status();
     }
 
     /** Main thread (button) or worker (command). */
     void schliessen() {
         PluginHost h = host;
-        synchronized (this) { aktuell = null; }
+        TestAnsicht a;
+        synchronized (this) {
+            a = aktuell;
+            aktuell = null;
+        }
+        if (a != null && !a.m.geschlossenGemeldet) {
+            a.m.geschlossenGemeldet = true;
+            meldenStatus(a.m, "geschlossen", geschlossenDaten(a.m));
+        }
         if (h != null) {
             try { h.hideOverlay(OVERLAY); } catch (RuntimeException ignored) {}
         }
@@ -1392,11 +1697,17 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     /** echo_show/ansicht/melden, only for requests that came with a token. Any thread. */
     private void melden(Messung m, String art, Map<String, Object> daten) {
+        if (m.token == null) return;
+        meldenStatus(m, art, daten);
+    }
+
+    /** echo_show/ansicht/melden for lifecycle reports ("offen" / "geschlossen" / token replies). Any thread. */
+    private void meldenStatus(Messung m, String art, Map<String, Object> daten) {
         PluginHost h = host;
-        if (m.token == null || h == null) return;
+        if (h == null) return;
         Map<String, Object> msg = new LinkedHashMap<>();
         msg.put("type", "echo_show/ansicht/melden");
-        msg.put("token", m.token);
+        msg.put("token", m.token == null ? "" : m.token);
         msg.put("art", art);
         msg.put("daten", daten);
         try {
@@ -1407,6 +1718,31 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         } catch (RuntimeException ignored) {
             // session ended or rate limit; the integration times out after 4 s
         }
+    }
+
+    private Map<String, Object> offenDaten(Messung m) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("dashboard", dashboard);
+        d.put("seite", m.ansicht);
+        d.put("nativ", true);
+        d.put("param", m.param != null ? m.param : Collections.<String, Object>emptyMap());
+        return d;
+    }
+
+    private Map<String, Object> geschlossenDaten(Messung m) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("dashboard", dashboard);
+        d.put("seite", m.ansicht);
+        return d;
+    }
+
+    private static Map<String, Object> wsMsg(String type, Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("type", type);
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            m.put(String.valueOf(kv[i]), kv[i + 1]);
+        }
+        return m;
     }
 
     /** Free system RAM through host.read getDeviceInfo (the same reading KS shows in its device details). */
@@ -1481,16 +1817,28 @@ public final class EchoShowTestPlugin implements KioskPlugin {
 
     // ---- helpers --------------------------------------------------------------------------------------------------
 
-    /** kalender | timer | liste (also with a test- prefix), or null. */
+    /** Canonical native view name (with test- prefix and aliases), or null. */
     static String ansicht(String roh) {
         if (roh == null) return null;
         String n = roh.trim().toLowerCase(Locale.ROOT);
         if (n.startsWith("test-")) n = n.substring(5);
+        if ("gaestewlan".equals(n)) return "gaeste-wlan";
+        if ("musik".equals(n)) return "player";
+        if ("waschmaschine-verlauf".equals(n)) return "waschmaschine";
+        if ("server-dienste".equals(n)) return "server";
         for (String a : ANSICHTEN) if (a.equals(n)) return a;
         return null;
     }
 
-    /** Link arguments: e.g. timer/90, kalender/wochenende, wetter/woche/2026-11-28,2026-11-29, morgen/demo. */
+    private static void aliasParam(String roh, Map<String, Object> p) {
+        if (roh == null || p == null || p.containsKey("tab")) return;
+        String n = roh.trim().toLowerCase(Locale.ROOT);
+        if (n.startsWith("test-")) n = n.substring(5);
+        if ("waschmaschine-verlauf".equals(n)) p.put("tab", "verlauf");
+        else if ("server-dienste".equals(n)) p.put("tab", "dienste");
+    }
+
+    /** Link arguments: e.g. timer/90, kalender/wochenende, einkaufsliste/todo.id, waschmaschine/verlauf, server/dienste. */
     static Map<String, Object> linkParam(String ansicht, List<String> rest) {
         Map<String, Object> p = new LinkedHashMap<>();
         if (rest == null || rest.isEmpty()) return p;
@@ -1517,6 +1865,12 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             if (!b.isEmpty() && b.matches("\\d{4}-\\d{2}-\\d{2}(,\\d{4}-\\d{2}-\\d{2})*")) p.put("tage", b);
         } else if ("morgen".equals(ansicht) && ("demo".equals(a) || "story".equals(a) || "mehr".equals(a))) {
             p.put("modus", a);
+        } else if ("einkaufsliste".equals(ansicht) && !a.isEmpty()) {
+            p.put("liste", a);
+        } else if ("waschmaschine".equals(ansicht) && ("verlauf".equalsIgnoreCase(a) || "jetzt".equalsIgnoreCase(a))) {
+            p.put("tab", a.toLowerCase(Locale.ROOT));
+        } else if ("server".equals(ansicht) && ("dienste".equalsIgnoreCase(a) || "uebersicht".equalsIgnoreCase(a))) {
+            p.put("tab", a.toLowerCase(Locale.ROOT));
         }
         return p;
     }

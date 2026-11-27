@@ -36,6 +36,7 @@ final class SchonerUi {
     private final Rect coverSrc = new Rect();
     private final Path akzent = new Path(), coverClip = new Path();
     private final Map<String, Path> iconCache = new HashMap<>();
+    private final Map<String, boolean[][]> qrCache = new HashMap<>();
     private final SimpleDateFormat fmtHm = new SimpleDateFormat("HH:mm", Locale.ROOT);
     private final SimpleDateFormat fmtSec = new SimpleDateFormat(":ss", Locale.ROOT);
     private final SimpleDateFormat fmtDatum = new SimpleDateFormat("EEEE, d. MMMM", Locale.GERMAN);
@@ -213,11 +214,40 @@ final class SchonerUi {
         c.drawRoundRect(r, 12, 12, p);
         drawIcon(c, hi.icon, x + 22, y + 21, 22, hi.farbe);
 
+        // Optional compact QR badge (e.g. Guest Wi-Fi card)
+        boolean[][] qr = hi.wifiQr != null && !hi.wifiQr.isEmpty() ? qrMatrix(hi.wifiQr) : null;
+        if (qr != null) {
+            float qSize = 46, qx = x + w - 10 - qSize, qy = y + (h - qSize) * .5f;
+            r.set(qx, qy, qx + qSize, qy + qSize);
+            p.setColor(0xFFFFFFFF);
+            c.drawRoundRect(r, 8, 8, p);
+            float pad = 4f, mod = (qSize - pad * 2f) / qr.length;
+            p.setColor(0xFF0D1720);
+            for (int row = 0; row < qr.length; row++) {
+                for (int col = 0; col < qr.length; col++) {
+                    if (qr[row][col]) {
+                        c.drawRect(qx + pad + col * mod, qy + pad + row * mod, qx + pad + (col + 1) * mod, qy + pad + (row + 1) * mod, p);
+                    }
+                }
+            }
+        }
+
         // Title and subtitle (ellipsized cleanly)
-        float maxW = w - 64 - 14;
+        float maxW = w - 64 - 14 - (qr != null ? 54 : 0);
         c.drawText(kuerzen(kTitelP, hi.titel, maxW), x + 64, y + 29, kTitelP);
         String sub = !hi.unter.isEmpty() ? hi.unter : SchonerDaten.vorText(hi.zeit, jetzt);
         if (!sub.isEmpty()) c.drawText(kuerzen(kUnterP, sub, maxW), x + 64, y + 48, kUnterP);
+    }
+
+    private boolean[][] qrMatrix(String text) {
+        if (qrCache.containsKey(text)) return qrCache.get(text);
+        boolean[][] m = null;
+        try {
+            m = QrCode.encode(text);
+        } catch (RuntimeException ignored) {}
+        if (qrCache.size() > 8) qrCache.clear();
+        qrCache.put(text, m);
+        return m;
     }
 
     private void musikZeichnen(Canvas c, float x, float y, float t, SchonerDaten.Musik m) {

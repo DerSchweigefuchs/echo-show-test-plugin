@@ -1,5 +1,7 @@
 package echoshow.kiosktest;
 
+import java.util.ArrayList;
+import java.util.List;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
@@ -20,11 +22,25 @@ final class Landschaften {
     static final String[] ORTE = {"see", "lichtung", "tal", "meer", "gipfel", "felder"};
 
     static String ortFuer(String einstellung, int tagNr) {
+        return ortFuer(einstellung, null, tagNr);
+    }
+
+    static String ortFuer(String einstellung, List<String> orte, int tagNr) {
         if (einstellung != null) {
             for (String o : ORTE) if (o.equals(einstellung)) return o;
         }
-        int idx = ((tagNr * 5 + 1) % ORTE.length + ORTE.length) % ORTE.length;
-        return ORTE[idx];
+        List<String> valid = new ArrayList<>();
+        if (orte != null) {
+            for (String o : orte) {
+                for (String x : ORTE) if (x.equals(o) && !valid.contains(o)) valid.add(o);
+            }
+        }
+        if (valid.isEmpty() || valid.size() == ORTE.length) {
+            int idx = ((tagNr * 5 + 1) % ORTE.length + ORTE.length) % ORTE.length;
+            return ORTE[idx];
+        }
+        int idx = ((tagNr % valid.size()) + valid.size()) % valid.size();
+        return valid.get(idx);
     }
 
     static String ortName(String ort) {
@@ -779,10 +795,16 @@ final class Landschaften {
     void vorFigur(Canvas c, String ort, WetterLage lage, WetterLage.Licht L, float t, boolean mondDa,
                   float sx, float mx, double sonneAlt, Himmel.Mond mond, double temp, int monat,
                   float[][] ringe, float[][] glanz) {
+        vorFigur(c, ort, lage, L, t, mondDa, sx, mx, sonneAlt, mond, temp, monat, ringe, glanz, true);
+    }
+
+    void vorFigur(Canvas c, String ort, WetterLage lage, WetterLage.Licht L, float t, boolean mondDa,
+                  float sx, float mx, double sonneAlt, Himmel.Mond mond, double temp, int monat,
+                  float[][] ringe, float[][] glanz, boolean tiere) {
         p.setStyle(Paint.Style.FILL);
         switch (ort) {
             case "see": drawSee(c, lage, L, t, mondDa, sx, mx, sonneAlt, mond, temp, monat, ringe, glanz); break;
-            case "lichtung": drawLichtung(c, lage, L, t, temp, monat); break;
+            case "lichtung": drawLichtung(c, lage, L, t, temp, monat, tiere); break;
             case "tal": drawTal(c, lage, L, t, temp, monat); break;
             case "gipfel": drawGipfel(c, lage, L, t, monat); break;
             default: drawFelder(c, lage, L, t, temp, monat); break;
@@ -900,7 +922,7 @@ final class Landschaften {
 
     // ---- 2. LICHTUNG -------------------------------------------------------------------------------------------------
 
-    private void drawLichtung(Canvas c, WetterLage lage, WetterLage.Licht L, float t, double temp, int monat) {
+    private void drawLichtung(Canvas c, WetterLage lage, WetterLage.Licht L, float t, double temp, int monat, boolean tiere) {
         float tag = L.tag, nacht = 1 - tag;
         int sai = saison(monat);
         p.setColor(cFar); c.drawPath(LICHT_FAR, p);
@@ -942,7 +964,7 @@ final class Landschaften {
             }
         }
         // Two distant deer by the left forest edge in fair daytime weather
-        if (tag > .45f && lage.tropfen == 0 && !lage.nebel && !lage.blitz) {
+        if (tiere && tag > .45f && lage.tropfen == 0 && !lage.nebel && !lage.blitz) {
             drawReh(c, 300, 252, 1, false);
             drawReh(c, 324, 254, -1, true);
         }

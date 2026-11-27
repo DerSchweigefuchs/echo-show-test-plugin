@@ -1,41 +1,32 @@
 package echoshow.kiosktest;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.animation.ObjectAnimator;
-import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.text.TextUtils;
 import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
-import android.view.animation.AccelerateDecelerateInterpolator;
-import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import me.jxl.kiosk.plugins.KsTheme;
 import me.jxl.kiosk.plugins.OverlayFactory;
 
 /**
- * The full-screen test view: a header (title, measured times, frame counter, close button) and one of three bodies.
+ * The full-screen native view host.
  * Everything here runs on the Android main thread. Listeners and posted runnables run outside KS's guards, so each
  * one catches its own errors.
  */
@@ -69,13 +60,29 @@ final class TestAnsicht implements OverlayFactory {
         }
     }
 
-    /** Main thread: the calendar answer, or new presence data (people or history), arrived (posted by the plugin). */
+    /** Main thread: the view's HA data arrived (posted by the plugin). */
     void datenDa() {
         if (aktiv == null) return;
         if (aktiv.anwView != null) aktiv.anwFuellen();
         else if (aktiv.morgenView != null) aktiv.morgenWetterFuellen();
         else if (aktiv.wetterView != null) aktiv.wetterFuellen();
+        else if (aktiv.musikView != null) aktiv.musikFuellen();
+        else if (aktiv.waschView != null) aktiv.waschFuellen();
+        else if (aktiv.gaesteView != null) aktiv.gaesteFuellen();
+        else if (aktiv.einkaufView != null) aktiv.einkaufFuellen();
+        else if (aktiv.muellView != null) aktiv.muellFuellen();
+        else if (aktiv.serverView != null) aktiv.serverFuellen();
         else aktiv.kalenderFuellen();
+    }
+
+    /** Main thread: downloaded album cover + blurred backdrop arrived for MusikPlayerView. */
+    void playerCoverSetzen(String url, Bitmap scharf, Bitmap weich) {
+        if (aktiv != null && aktiv.musikView != null) aktiv.musikView.setCover(url, scharf, weich);
+    }
+
+    /** Main thread: downloaded router QR fallback image arrived for GaesteWlanView. */
+    void gaesteBildSetzen(String url, Bitmap bmp) {
+        if (aktiv != null && aktiv.gaesteView != null) aktiv.gaesteView.setBild(url, bmp);
     }
 
     /** Main thread: news / "Mein Tag" reading state updated. */
@@ -107,6 +114,17 @@ final class TestAnsicht implements OverlayFactory {
     void szeneOrtSetzen(String ort) {
         if (aktiv != null && aktiv.wetterView != null) aktiv.wetterView.setOrt(ort);
         if (aktiv != null && aktiv.morgenView != null) aktiv.morgenView.setOrt(ort);
+    }
+
+    /** Main thread: HA panel config (wetter_name, szene flags) updated. */
+    void konfigAnwenden() {
+        if (aktiv == null) return;
+        if (aktiv.wetterView != null) plugin.konfigAnwenden(aktiv.wetterView);
+        if (aktiv.morgenView != null) plugin.konfigAnwenden(aktiv.morgenView.wetterView());
+        if (aktiv.einkaufView != null && plugin.einkaufsKonfig() != null) {
+            m.ansichtDaten = plugin.einkaufsKonfig();
+            aktiv.einkaufFuellen();
+        }
     }
 
     /** Main thread: settings-driven weather/time/landscape preview toggled or changed. */
@@ -147,16 +165,18 @@ final class TestAnsicht implements OverlayFactory {
         final Context ctx;
         final KsTheme th;
         final LinearLayout root;
-        TextView zeitLabel, framesLabel;
-        LinearLayout kalenderListe;
         AnwesenheitView anwView;
         WetterView wetterView;
         MorgenView morgenView;
         KalenderView kalenderView;
         TimerView timerView;
+        MusikPlayerView musikView;
+        WaschmaschineView waschView;
+        GaesteWlanView gaesteView;
+        EinkaufslisteView einkaufView;
+        MuellView muellView;
+        ServerView serverView;
         String messZeit = "", messFrames = "";
-        ScrollView scroll;
-        ObjectAnimator autoScroll;
         final FrameZaehler zaehler = new FrameZaehler();
         final Handler handler = new Handler(Looper.getMainLooper());
         boolean ersterFrame, sichtbar, gefuellt, zerstoert;
@@ -174,9 +194,7 @@ final class TestAnsicht implements OverlayFactory {
             root = new LinearLayout(ctx);
             root.setOrientation(LinearLayout.VERTICAL);
             root.setBackgroundColor(th.color("surface"));
-            root.setClickable(true);   // touches stay in the test view
-            // only the 50-row stress list keeps the test header; all real views are full-screen native layouts
-            if ("liste".equals(m.ansicht)) root.addView(kopf(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            root.setClickable(true);   // touches stay in the view
             FrameLayout inhalt = new FrameLayout(ctx);
             root.addView(inhalt, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             if ("anwesenheit".equals(m.ansicht)) anwesenheit(inhalt);
@@ -184,7 +202,12 @@ final class TestAnsicht implements OverlayFactory {
             else if ("schoner".equals(m.ansicht)) schoner(inhalt);
             else if ("morgen".equals(m.ansicht)) morgen(inhalt);
             else if ("timer".equals(m.ansicht)) timer(inhalt);
-            else if ("liste".equals(m.ansicht)) liste(inhalt);
+            else if ("player".equals(m.ansicht)) player(inhalt);
+            else if ("waschmaschine".equals(m.ansicht)) waschmaschine(inhalt);
+            else if ("gaeste-wlan".equals(m.ansicht)) gaesteWlan(inhalt);
+            else if ("einkaufsliste".equals(m.ansicht)) einkaufsliste(inhalt);
+            else if ("muell".equals(m.ansicht)) muell(inhalt);
+            else if ("server".equals(m.ansicht)) server(inhalt);
             else kalender(inhalt);
             zeitText();
             // A draw listener added before the view is attached sits on a temporary ViewTreeObserver and did not fire on
@@ -225,67 +248,8 @@ final class TestAnsicht implements OverlayFactory {
             zeitText();
         }
 
-        // ---- header -------------------------------------------------------------------------------------------
-
-        private View kopf() {
-            LinearLayout kopf = new LinearLayout(ctx);
-            kopf.setOrientation(LinearLayout.HORIZONTAL);
-            kopf.setGravity(Gravity.CENTER_VERTICAL);
-            kopf.setPadding(th.px(24), th.px(10), th.px(12), th.px(10));
-            kopf.setBackgroundColor(th.color("surfaceContainerHigh"));
-            TextView titel = new TextView(ctx);
-            titel.setText(titel());
-            th.styleText(titel, 22, 600, "onSurface");
-            titel.setSingleLine(true);
-            kopf.addView(titel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            LinearLayout mess = new LinearLayout(ctx);
-            mess.setOrientation(LinearLayout.VERTICAL);
-            mess.setGravity(Gravity.END);
-            mess.setPadding(th.px(16), 0, th.px(12), 0);
-            zeitLabel = new TextView(ctx);
-            th.styleText(zeitLabel, 15, 500, "onSurface");
-            zeitLabel.setGravity(Gravity.END);
-            zeitLabel.setSingleLine(true);
-            zeitLabel.setEllipsize(TextUtils.TruncateAt.END);
-            framesLabel = new TextView(ctx);
-            th.styleText(framesLabel, 13, 400, "onSurfaceVariant");
-            framesLabel.setGravity(Gravity.END);
-            framesLabel.setSingleLine(true);
-            framesLabel.setText("Frames: –");
-            mess.addView(zeitLabel);
-            mess.addView(framesLabel);
-            kopf.addView(mess, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            if ("liste".equals(m.ansicht)) {
-                Button auto = new Button(ctx);
-                auto.setText("Auto-Scroll");
-                th.stylePill(auto, false);
-                auto.setOnClickListener(v -> sicher(this::autoScroll));
-                kopf.addView(auto);
-            }
-            Button zu = new Button(ctx);
-            zu.setText("Schließen");
-            th.stylePill(zu, true);
-            zu.setOnClickListener(v -> sicher(plugin::schliessen));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.leftMargin = th.px(8);
-            kopf.addView(zu, lp);
-            return kopf;
-        }
-
-        private String titel() {
-            switch (m.ansicht) {
-                case "timer": return "Timer (nativ)";
-                case "liste": return "Liste 50 (nativ)";
-                case "anwesenheit": return "Anwesenheit (nativ)";
-                case "wetter": return "Wetter (nativ)";
-                case "schoner": return "Schoner (nativ)";
-                case "morgen": return "Mein Tag (nativ)";
-                default: return "Kalender (nativ)";
-            }
-        }
-
         void zeitText() {
-            if (zeitLabel == null && anwView == null && wetterView == null) return;
+            if (anwView == null && wetterView == null) return;
             StringBuilder sb = new StringBuilder();
             if (m.tInhalt > 0) {
                 sb.append("offen in ").append(m.ms(m.tInhalt)).append(" ms");
@@ -301,7 +265,6 @@ final class TestAnsicht implements OverlayFactory {
             }
             sb.append(" · ").append(m.quelle);
             messZeit = sb.toString();
-            if (zeitLabel != null) zeitLabel.setText(messZeit);
             if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
             if (wetterView != null) wetterView.mess("nativ · " + messZeit, "Hauptthread " + messFrames);
         }
@@ -310,7 +273,6 @@ final class TestAnsicht implements OverlayFactory {
             if (!sichtbar) return;
             messFrames = String.format(Locale.ROOT, "%d fps · Ruckler %d von %d Frames · max %d ms",
                 zaehler.fps, zaehler.ruckler, zaehler.frames, zaehler.maxNs / 1_000_000L);
-            if (framesLabel != null) framesLabel.setText(messFrames);
             if (anwView != null) anwView.mess("nativ · " + messZeit, messFrames);
             if (wetterView != null) wetterView.mess("nativ · " + messZeit, "Hauptthread " + messFrames);
         }
@@ -329,7 +291,7 @@ final class TestAnsicht implements OverlayFactory {
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, mo instanceof String ? (String) mo : "live", uhr instanceof String ? (String) uhr : null, plugin.sternbildNamen(), plugin.wetterFps());
-            plugin.vorschauAnwenden(wetterView);
+            plugin.konfigAnwenden(wetterView);
             if (m.param != null) {
                 Object ans = m.param.get("ansicht");
                 Object rawTage = m.param.get("tage");
@@ -343,7 +305,7 @@ final class TestAnsicht implements OverlayFactory {
                     wetterView.setVorhersageParam(ans instanceof String ? (String) ans : null, tage);
                 }
             }
-            inhalt.addView(wetterView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            inhalt.addView(wetterView.mitVordergrund(ctx), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             wetterFuellen();
         }
 
@@ -361,7 +323,7 @@ final class TestAnsicht implements OverlayFactory {
                     if (sichtbar) zweiFrames(() -> { if (!zerstoert) { szeneMessen(); plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
                 }
             }, th, plugin.schonerOptionen(), initModus, initUhr, plugin.sternbildNamen(), true);
-            wetterView.setOrt(plugin.szeneOrt());
+            plugin.konfigAnwenden(wetterView);
             wetterView.setSchoner(plugin.schonerZustand());
             inhalt.addView(wetterView.mitVordergrund(ctx), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             View panel = vorschauLeiste(initModus, initUhr);
@@ -559,7 +521,7 @@ final class TestAnsicht implements OverlayFactory {
                 @Override public boolean pausiert() { return plugin.wetterPausiert(); }
                 @Override public void bildBedarf(String bildUrl) { plugin.artikelBildLaden(bildUrl); }
             }, plugin.szeneOrt(), plugin.sternbildNamen());
-            plugin.vorschauAnwenden(morgenView.wetterView());
+            plugin.konfigAnwenden(morgenView.wetterView());
             inhalt.addView(morgenView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             morgenWetterFuellen();
             Object mo = m.param == null ? null : m.param.get("modus");
@@ -593,6 +555,7 @@ final class TestAnsicht implements OverlayFactory {
             if (wetterView != null) wetterView.pauseGeaendert();
             if (morgenView != null) morgenView.pauseGeaendert();
             if (timerView != null) timerView.pauseGeaendert();
+            if (musikView != null) musikView.pauseGeaendert();
         }
 
         // ---- (d) presence -------------------------------------------------------------------------------------
@@ -625,31 +588,40 @@ final class TestAnsicht implements OverlayFactory {
                 @Override public void bereichLaden(Calendar start, int tageAnzahl) {
                     plugin.kalenderBereichLaden(TestAnsicht.this, start, tageAnzahl);
                 }
+                @Override public void erinnern(String titel, String umIso, String beginn) {
+                    Map<String, Object> data = new LinkedHashMap<>();
+                    data.put("titel", titel);
+                    data.put("um", umIso);
+                    data.put("beginn", beginn);
+                    plugin.haDienst("script", "echo_show_kalender_erinnern", null, data);
+                }
+                @Override public void erstellen(Map<String, Object> callMsg) {
+                    plugin.haCallWeiterleiten(callMsg, (ok, data, err) -> {
+                        if (ok) plugin.kalenderBereichLaden(TestAnsicht.this, kalenderView.sichtStart(), kalenderView.sichtTage());
+                    });
+                }
+                @Override public void muellErledigt(String datum, boolean erledigt) {
+                    Map<String, Object> msg = new LinkedHashMap<>();
+                    msg.put("type", "echo_show/muell/erledigt_setzen");
+                    msg.put("datum", datum);
+                    msg.put("erledigt", erledigt);
+                    plugin.haCallWeiterleiten(msg, (ok, data, err) -> {
+                        if (ok) plugin.kalenderBereichLaden(TestAnsicht.this, kalenderView.sichtStart(), kalenderView.sichtTage());
+                    });
+                }
             }, sp);
             inhalt.addView(kalenderView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            if (m.termine != null || m.datenFehler != null) kalenderFuellen();
+            if (m.kalenderErgebnis != null || m.termine != null || m.datenFehler != null) kalenderFuellen();
         }
 
         void kalenderFuellen() {
             if (zerstoert || kalenderView == null) return;
-            kalenderView.setDaten(m.termine, m.datenFehler);
+            if (m.kalenderErgebnis != null) kalenderView.setDaten(m.kalenderErgebnis, m.datenFehler);
+            else kalenderView.setDaten(m.termine, m.datenFehler);
             if (!gefuellt) {
                 gefuellt = true;
                 if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
             }
-        }
-
-        private GradientDrawable karte() {
-            GradientDrawable d = new GradientDrawable();
-            d.setColor(th.color("surfaceContainerHigh"));
-            d.setCornerRadius(th.px(th.radiusRow()));
-            return d;
-        }
-
-        private LinearLayout.LayoutParams abstand() {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = th.px(8);
-            return lp;
         }
 
         // ---- (b) timer & alarms (full-screen native port of timer_ansicht.py) ---------------------------------
@@ -667,77 +639,146 @@ final class TestAnsicht implements OverlayFactory {
             inhalt.addView(timerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
-        // ---- (c) list of 50 rows ------------------------------------------------------------------------------
+        // ---- (c) music player ---------------------------------------------------------------------------------
 
-        private final String[] icons = {"mdi:lightbulb", "mdi:thermometer", "mdi:fan", "mdi:door", "mdi:television", "mdi:speaker", "mdi:window-closed", "mdi:power-plug"};
-        private final String[] raeume = {"Wohnzimmer", "Küche", "Bad", "Flur", "Büro", "Schlafzimmer", "Keller"};
-
-        private void liste(FrameLayout inhalt) {
-            scroll = new ScrollView(ctx);
-            LinearLayout spalte = new LinearLayout(ctx);
-            spalte.setOrientation(LinearLayout.VERTICAL);
-            spalte.setPadding(th.px(24), th.px(16), th.px(24), th.px(24));
-            for (int i = 1; i <= 50; i++) spalte.addView(zeile(i));
-            scroll.addView(spalte);
-            inhalt.addView(scroll);
+        private void player(FrameLayout inhalt) {
+            musikView = new MusikPlayerView(ctx, th, new MusikPlayerView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, MusikPlayerView.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
+                }
+                @Override public void coverLaden(String url) {
+                    plugin.playerCoverLaden(url);
+                }
+                @Override public boolean pausiert() { return plugin.wetterPausiert(); }
+            });
+            inhalt.addView(musikView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null) musikFuellen();
         }
 
-        private View zeile(int i) {
-            LinearLayout z = new LinearLayout(ctx);
-            z.setOrientation(LinearLayout.HORIZONTAL);
-            z.setGravity(Gravity.CENTER_VERTICAL);
-            z.setPadding(th.px(16), th.px(10), th.px(16), th.px(10));
-            z.setBackground(karte());
-            ImageView icon = new ImageView(ctx);
-            Drawable d = null;
-            try {
-                d = th.icon(icons[i % icons.length], "primary");
-            } catch (LinkageError olderHost) {
-                // KS without KsTheme.icon: row without icon
+        void musikFuellen() {
+            if (zerstoert || musikView == null) return;
+            musikView.setDaten(m.ansichtDaten);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
             }
-            if (d != null) icon.setImageDrawable(d);
-            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(th.px(28), th.px(28));
-            ilp.rightMargin = th.px(16);
-            z.addView(icon, ilp);
-            LinearLayout text = new LinearLayout(ctx);
-            text.setOrientation(LinearLayout.VERTICAL);
-            TextView titel = new TextView(ctx);
-            titel.setText("Eintrag " + i);
-            th.styleText(titel, 17, 500, "onSurface");
-            TextView unter = new TextView(ctx);
-            unter.setText(raeume[i % raeume.length] + " · Testzeile " + i + " von 50");
-            th.styleText(unter, 13, 400, "onSurfaceVariant");
-            text.addView(titel);
-            text.addView(unter);
-            z.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            TextView wert = new TextView(ctx);
-            wert.setText(String.format(Locale.GERMAN, "%.1f °C", 18 + (i * 7 % 50) / 10.0));
-            th.styleText(wert, 17, 600, "onSurface");
-            z.addView(wert);
-            z.setLayoutParams(abstand());
-            return z;
         }
 
-        /** Scrolls to the end and back in 3 s each, so smoothness can be compared run by run. */
-        private void autoScroll() {
-            if (scroll == null || scroll.getChildCount() == 0) return;
-            if (autoScroll != null) autoScroll.cancel();
-            int max = Math.max(0, scroll.getChildAt(0).getHeight() - scroll.getHeight());
-            zaehler.reset();
-            autoScroll = ObjectAnimator.ofInt(scroll, "scrollY", 0, max);
-            autoScroll.setDuration(3000);
-            autoScroll.setInterpolator(new AccelerateDecelerateInterpolator());
-            autoScroll.setRepeatCount(1);
-            autoScroll.setRepeatMode(ValueAnimator.REVERSE);
-            autoScroll.addListener(new AnimatorListenerAdapter() {
-                private boolean abgebrochen;
-                @Override public void onAnimationCancel(Animator a) { abgebrochen = true; }
-                @Override public void onAnimationEnd(Animator a) {
-                    if (abgebrochen || zerstoert) return;
-                    sicher(() -> plugin.scrollFertig(TestAnsicht.this, zaehler.frames, zaehler.ruckler, zaehler.maxNs / 1_000_000L));
+        // ---- (f) washing machine ------------------------------------------------------------------------------
+
+        private void waschmaschine(FrameLayout inhalt) {
+            String initTab = m.param != null && m.param.get("tab") instanceof String ? (String) m.param.get("tab") : "";
+            waschView = new WaschmaschineView(ctx, th, initTab, new WaschmaschineView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, WaschmaschineView.Aktionen.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
                 }
             });
-            autoScroll.start();
+            inhalt.addView(waschView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null || m.datenFehler != null) waschFuellen();
+        }
+
+        void waschFuellen() {
+            if (zerstoert || waschView == null) return;
+            waschView.setDaten(m.ansichtDaten, m.datenFehler);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+            }
+        }
+
+        // ---- (g) guest Wi-Fi ----------------------------------------------------------------------------------
+
+        private void gaesteWlan(FrameLayout inhalt) {
+            gaesteView = new GaesteWlanView(ctx, th, new GaesteWlanView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, GaesteWlanView.Aktionen.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
+                }
+                @Override public void bildLaden(String url) {
+                    plugin.gaesteBildLaden(url);
+                }
+            });
+            inhalt.addView(gaesteView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null || m.datenFehler != null) gaesteFuellen();
+        }
+
+        void gaesteFuellen() {
+            if (zerstoert || gaesteView == null) return;
+            gaesteView.setDaten(m.ansichtDaten, m.datenFehler);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+            }
+        }
+
+        // ---- (h) shopping list --------------------------------------------------------------------------------
+
+        private void einkaufsliste(FrameLayout inhalt) {
+            String initListe = m.param != null && m.param.get("liste") instanceof String ? (String) m.param.get("liste") : "";
+            einkaufView = new EinkaufslisteView(ctx, th, initListe, plugin.caveatTf(), new EinkaufslisteView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, EinkaufslisteView.Aktionen.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
+                }
+            });
+            inhalt.addView(einkaufView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null || m.ansichtZusatz != null || m.datenFehler != null) einkaufFuellen();
+        }
+
+        void einkaufFuellen() {
+            if (zerstoert || einkaufView == null) return;
+            einkaufView.setDaten(m.ansichtDaten, m.ansichtZusatz, m.datenFehler);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+            }
+        }
+
+        // ---- (i) waste collection -----------------------------------------------------------------------------
+
+        private void muell(FrameLayout inhalt) {
+            muellView = new MuellView(ctx, th, new MuellView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, MuellView.Aktionen.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
+                }
+            });
+            inhalt.addView(muellView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null || m.datenFehler != null) muellFuellen();
+        }
+
+        void muellFuellen() {
+            if (zerstoert || muellView == null) return;
+            muellView.setDaten(m.ansichtDaten, m.datenFehler);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+            }
+        }
+
+        // ---- (j) server status --------------------------------------------------------------------------------
+
+        private void server(FrameLayout inhalt) {
+            String initTab = m.param != null && m.param.get("tab") instanceof String ? (String) m.param.get("tab") : "";
+            serverView = new ServerView(ctx, th, initTab, new ServerView.Aktionen() {
+                @Override public void zurueck() { plugin.schliessen(); }
+                @Override public void ha(Map<String, Object> msg, ServerView.Aktionen.Antwort cb) {
+                    plugin.haCallWeiterleiten(msg, cb::fertig);
+                }
+            });
+            inhalt.addView(serverView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (m.ansichtDaten != null || m.datenFehler != null) serverFuellen();
+        }
+
+        void serverFuellen() {
+            if (zerstoert || serverView == null) return;
+            serverView.setDaten(m.ansichtDaten, m.datenFehler);
+            if (!gefuellt && (m.ansichtDaten != null || m.datenFehler != null)) {
+                gefuellt = true;
+                if (sichtbar) zweiFrames(() -> { if (!zerstoert) { plugin.inhaltFertig(TestAnsicht.this); zeitText(); } });
+            }
         }
 
         /** The weather scene's own figures (frame times, CPU, bitmap memory) for "bereit" and the status. */
@@ -760,7 +801,6 @@ final class TestAnsicht implements OverlayFactory {
             zerstoert = true;
             zaehler.stop();
             handler.removeCallbacksAndMessages(null);
-            if (autoScroll != null) autoScroll.cancel();
             try { root.getViewTreeObserver().removeOnDrawListener(draw); } catch (RuntimeException ignored) {}
             if (sichtbar) {
                 m.frames = zaehler.frames;

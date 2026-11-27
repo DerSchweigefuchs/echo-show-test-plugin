@@ -1,74 +1,43 @@
-# Echo Show Test-Ansichten (Kiosk Satellite Plugin)
+# Echo Show Ansichten (Kiosk Satellite Plugin)
 
-Prototyp zum Messen: Laufen native Android-Ansichten auf einem Echo Show schneller und sparsamer als Lovelace-Seiten?
+Alle 11 nativen Vollbild-Ansichten für das Echo Show Dashboard sowie der native Bildschirmschoner „Wetterszene“ mit Live-Synchronisation der Home-Assistant-Konfiguration.
 
-## Was es kann
-Fünf native Vollbild-Ansichten über dem Dashboard plus ein nativer Kiosk-Satellite-Bildschirmschoner:
+## Enthaltene Ansichten
 
 | Ansicht | Inhalt |
 |---|---|
-| `kalender` | Nativer 1:1-Nachbau der Lovelace-Kalenderseite: 5 Ansichten (**Tag**, **3 Tage**, **Woche**, **Monat**, **Liste**), Zeitraster mit Ganztagesbalken, Live-Jetzt-Linie, hervorgehobenen KI-Tagen (`tag`, `zeitraum`, `tage`), Zeitraum-Navigation und Termin-Detailkarte aus `calendar.get_events` |
-| `timer` | Nativer 1:1-Nachbau der Lovelace-Timer-&-Wecker-Seite: großer Hero-Ring (mit pulsierendem Alarm-Halo beim Klingeln), weitere laufende Timer, nächste Wecker (24 h) und interaktive Steuerung (`Pause`/`Weiter`, `Löschen`, `Stopp`, `Wecker aus`) aus Home Assistant |
-| `liste` | 50 Zeilen mit Auto-Scroll als Lasttest |
-| `anwesenheit` | Nachbau einer Lovelace-Anwesenheitsseite als schwerer Vergleichstest: Personenkarten, Zeitleiste 0–24 Uhr und Woche, auf einem Canvas gezeichnet |
-| `wetter` | Live-Wetterszene (6 Landschaften) plus Vorhersage-Sheet unten (**Heute** 8-Stunden-Verlauf / **Woche** 6 Tage mit markierten Tagen via `ansicht` & `tage`), rein aus Home Assistant (`wetter_stunden`/`wetter_woche`/`wetter_regen`/`wetter_tage`) |
-| `schoner` | Vollbild-Vorschau des nativen Bildschirmschoners „Wetterszene“ (oder direkt in Kiosk Satellite unter **Screensaver → Screensaver mode → Wetterszene (Echo Show Test-Ansichten)** auswählbar) |
-| `morgen` | Nativer Story-Player **„Mein Tag“ v2** & Vorlese-Ansicht: einheitliche obere Segment-Leiste für deinen frei sortierbaren Ablauf (`Begrüßung`, frei ordnungsfähige Nachrichten-Kategorien wie `Lokal`, `Politik`, `Wirtschaft`, `Sport`, `Kalender`, `Müll`, `Einkaufsliste`, `Wetter`, `Abschied`), Live-6-Landschaften-Wetterszene, Heute-Stundenverlauf, Live-Karaoke und einheitliche Steuerung (`echo_show/news/subscribe` & `echo_show/news/steuern`) |
+| `kalender` | Nativer 1:1-Nachbau der Kalenderseite: 5 Ansichten (**Tag**, **3 Tage**, **Woche**, **Monat**, **Liste**), Zeitraster mit Ganztagesbalken, Feiertagen, Abfallterminen (inkl. Abhaken), Live-Jetzt-Linie, hervorgehobenen KI-Tagen, Termin-Detailkarte & Neuanlage |
+| `timer` | Nativer 1:1-Nachbau der Timer-&-Wecker-Seite: großer Hero-Ring (mit pulsierendem Alarm-Halo), weitere laufende Timer, nächste Wecker (24 h) und Steuerung (`Pause`/`Weiter`, `Löschen`, `Stopp`, `Wecker aus`) |
+| `anwesenheit` | Personenkarten, Zeitleiste 0–24 Uhr und 7-Tage-Verlauf aus Home Assistant |
+| `wetter` | Live-Wetterszene (6 Landschaften, GPU-Hardware-Layer + 60-fps-Vordergrund, im Hintergrund vorgewärmt für sofortiges Öffnen) plus Vorhersage-Sheet (**Heute** 8-Stunden-Verlauf / **Woche** 6 Tage) |
+| `morgen` | Nativer Story-Player **„Mein Tag“ v2** & Vorlese-Ansicht mit Segment-Leiste, Live-Wetterszene, Stundenverlauf, Live-Karaoke und Steuerung (`echo_show/news/subscribe` & `echo_show/news/steuern`) |
+| `player` | Nativer Musik-Player mit unscharfem Albumcover-Hintergrund, Seekbar, synchronisierten Karaoke-Liedtexten (`echo_show/musik/liedtext`), Gerätewechsel & Gruppenverwaltung |
+| `waschmaschine` | Live-Statusring, Restzeit/Phase, 24h-Nutzungsprofil, „Ausgeräumt“-Aktion und Verlaufsansicht (`waschmaschine/verlauf`) mit Stunden-/Tages-/Wochen-Diagrammen |
+| `gaeste-wlan` | QR-Code (`QrCode` oder Router-Bild), ein-/ausblendbares Passwort, verbundene Geräte, Laufzeitwahl (+2 h, bis morgen früh, dauerhaft) & Schalter |
+| `einkaufsliste` | Notizblock-, Klebezettel- und Schlicht-Stil (mit Handschrift *Caveat*), Mehrfach-Listen (`einkaufsliste/<todo.id>`), Abhaken, Eingabe und „Nochmal kaufen“-Vorschläge |
+| `muell` | Nächste Abfuhrtermine mit Tonnen-Symbolen, „steht draußen ✓“-Bestätigung (`echo_show/muell/erledigt_setzen`) und 5-Wochen-Mini-Kalender |
+| `server` | System-Übersicht (CPU, RAM, Strom mit 24h-Sparklines), Speicherpools, Status-Raster und VMs/Container-Tab (`server/dienste`) |
+| `schoner` | Vollbild-Vorschau des nativen Bildschirmschoners „Wetterszene“ (oder direkt in Kiosk Satellite unter **Screensaver → Screensaver mode → Wetterszene** auswählbar) |
 
-In der Kopfzeile zeigt jede Ansicht ihre Messwerte (bei `anwesenheit` klein zwischen Titel und Umschalter, bei `wetter` unter der Szene):
-- Öffnungszeit
-- Bilder pro Sekunde, Ruckler und längstes Bild
-- freien RAM vorher und nachher
+## Öffnen & Steuerung
+- Deep-Links: `ks://plugin/echo-show-test/zeigen/<ansicht>`, optional mit Parameter:
+  - `/zeigen/timer/90`
+  - `/zeigen/kalender/wochenende` oder `/zeigen/kalender/2026-11-28`
+  - `/zeigen/wetter/zeitraffer` oder `/zeigen/wetter/21:30` oder `/zeigen/wetter/woche`
+  - `/zeigen/morgen/demo`, `/zeigen/morgen/story`, `/zeigen/morgen/mehr`
+  - `/zeigen/einkaufsliste/<todo.id>`
+  - `/zeigen/waschmaschine/verlauf`
+  - `/zeigen/server/dienste`
+- Befehle für Gesten, Drawer oder Home Assistant: `zeigen`, `kalender`, `timer`, `anwesenheit`, `wetter`, `morgen`, `player`, `waschmaschine`, `gaestewlan`, `einkaufsliste`, `muell`, `server`, `schoner`, `schliessen`.
+- Über die Integration „Echo Show Dashboard“: Abonniert `echo_show/ansicht/abo` (inkl. `nativ_seiten`), reagiert auf `vorbau` und `schliessen`, und meldet `offen`, `gezeigt`, `bereit` sowie `geschlossen` an `echo_show/ansicht/melden`.
 
-## Öffnen
-- Link: `ks://plugin/echo-show-test/zeigen/kalender` (oder `/timer`, `/liste`, `/anwesenheit`, `/wetter`), optional mit Tag oder Sekunden: `/zeigen/timer/90`
-- Befehle für Gesten, Drawer oder Home Assistant: `kalender`, `timer`, `liste`, `anwesenheit`, `wetter`, `schliessen`
-- Über die Integration „Echo Show Dashboard“: Abo `echo_show/ansicht/abo`. Reagiert auf die Seiten `test-kalender`, `test-timer`, `test-liste`, `test-anwesenheit`, `test-wetter` sowie auf native KI-Aufrufe (`nativ: true`) für `wetter`, `kalender`, `timer` und `anwesenheit` und meldet `bereit` und `gezeigt` mit Zeiten zurück. Alle anderen Seiten bleiben beim Dashboard.
+## Live-Konfiguration & Bildschirmschoner
+- Beim Start sowie bei jedem `echo_show_changed`-Event in Home Assistant lädt das Plugin die Panel-Konfiguration aus `echo_show/plugin/konfig` (`wetter`, `wetter_name`, `szene` mit `orte`, `wechsel`, `fest`, `sterne`, `namen`, `blitze`, `figur`, `tiere`, `personen`, `einkaufsliste`).
+- Über `echo_show/schoner/zusatz` werden aktive Zusatzkarten (Müll-Hinweis, nächster Termin, Einkaufsliste, Gäste-WLAN mit kompaktem QR-Code) direkt oben rechts im Bildschirmschoner „Wetterszene“ eingeblendet.
+- Die Plugin-Einstellungen unter **Wettervorschau** und **Bildschirmschoner** bleiben unabhängig davon lokal nutzbar und überschreiben bei aktiver Vorschau die Live-Szene.
+- Die Wolken-Ebenen der Wetterseite und des Bildschirmschoners liegen in getrennten Cache-Slots und bleiben während der gesamten Plugin-Sitzung im Speicher, sodass das Öffnen der Wetteransicht auch nach dem Aufwecken aus dem Schoner ohne Verzögerung erfolgt.
 
-## Anwesenheit
-- Personen: ein `render_template`-Abo über alle `person`-Entitäten, oder nur die in der Einstellung **Personen** genannten. Es bleibt aktiv, solange das Plugin läuft, damit die Ansicht die Personen sofort hat (wie die Zustände im Dashboard).
-- Verlauf: `history/history_during_period` für die letzten 7 Tage mit `minimal_response`, `no_attributes` und `significant_changes_only: false`. Ist die Antwort größer als die 32 KB, die Kiosk Satellite erlaubt, lädt das Plugin nur echte Zustandswechsel. Das Bild bleibt gleich. Die Meldung `bereit` zeigt das mit `verlauf_nur_wechsel` an.
-- Der Verlauf wird 5 Minuten gemerkt und neu geladen, sobald jemand kommt oder geht. Abschaltbar mit **Verlauf 5 Minuten merken**.
-- `bereit` kommt erst, wenn der Verlauf geladen und gezeichnet ist. Die Meldung enthält `daten_ms`, `personen`, `personen_cache`, `verlauf_cache` und `modus`.
-- Avatare zeigen den Anfangsbuchstaben. Profilbilder lädt das Plugin nicht.
-
-## Wetter
-- Szene „Meer“: Himmel, Meer mit Horizont, Leuchtturm-Insel (nachts mit Licht), Boot, Strand und Düne.
-- Himmel stufenlos nach der Sonnenhöhe: Nacht unter −12°, blaue Stunde um −6°, Abendrot oder Morgenröte von 0 bis 3° (je nachdem, ob die Sonne steigt), Tag über 10°.
-- Sonne und Mond stehen nach Azimut und Höhe am Himmel. Der Mond hat seine echte Phase. Sterne und Sternbilder stehen an ihrer echten Stelle und funkeln ab etwa −4°. Wolken verdecken Sterne und Mond.
-- Wolken ziehen. Regen, Schnee, Hagel, Nebel, Wind und Gewitter folgen der Wetterlage. Das Meer nimmt die Farbe des Himmels an und hat einen Glitzerpfad unter Sonne oder Mond. Das Boot schaukelt unregelmäßig.
-- Daten: ein `render_template`-Abo, nur lesend, mit der Wetter-Entität (Einstellung **Wetter-Entität**, sonst die erste `weather.*`), `sun.sun` und den Koordinaten von `zone.home`. Die Koordinaten kommen nur zur Laufzeit und bleiben im Speicher.
-- Zwischen den Aktualisierungen von `sun.sun` rechnet das Plugin die Sonnenbahn selbst weiter. Ohne Koordinaten gibt es keinen Mond und keine Sterne.
-- `zeigen/wetter/zeitraffer` spielt 24 Stunden in etwa 60 Sekunden ab. `zeigen/wetter/21:30` zeigt eine feste Uhrzeit von heute.
-- Figur des Tages wie auf der Lovelace-Seite (Nachbau von `figuren.js`): eine Person aus einem Pool von 13 (nur Aussehen, keine Namen), angezogen nach Temperatur, Wetter und Jahreszeit, manchmal mit Hund. An sonnigen Tagen mit Fernglas, in klaren Nächten mit Teleskop, in mondhellen Nächten mit Blick nach oben. Haare enden an der Hutkante. Durchsichtige Regenschirme gibt es nicht. Die Figur wird nach dem Licht getönt: nachts dunkler und kühler, in der Dämmerung warm wie die Landschaft.
-- Die Figur liegt in vier kleinen Bitmaps (Körper, Kopf, Schal, Hundeschwanz), etwa 70 bis 150 KB. Neu gezeichnet wird sie nur, wenn sich Person, Kleidung, Pose oder Lichtstufe ändern. Kopf und Hundeschwanz bewegen sich, indem ihre Bitmaps gedreht werden.
-- Last: Himmel, Meer, Land und Kopfzeile werden direkt aus einmal angelegten Pfaden gezeichnet, ohne Bitmaps. Nur die Wolkenreihen und der Mond sind Bitmaps. Jede Wolkenreihe hat die Auflösung, die ihre Unschärfe zulässt, und nur den Streifen, den sie belegt (mit Rand gegen Abschneiden), nahtlos gekachelt über `BitmapShader`, in den Farben des aktuellen Lichts. Zusammen sind das etwa 0,2 bis 1,3 MB. Die Wolken werden im Hintergrund gebaut und blenden ein; das erste Bild kommt sofort. Alle offenen Ansichten teilen sich die Ebenen. Sie werden 30 s nach dem Schließen oder Pausieren freigegeben. Die Szene läuft mit 30 oder 24 fps und pausiert samt Bildzähler, solange sie nicht sichtbar ist, der Bildschirmschoner läuft (auch wenn er beim Start schon aktiv war) oder der Bildschirm aus ist.
-- `gezeigt` kommt mit dem ersten Bild, `bereit`, sobald die Wolken eingeblendet sind. `bereit` enthält `daten_ms`, `aufbau_ms`, `daten_cache`, `zustand` und `modus` und die eigenen Messwerte der Szene: `szene_fps`, `frame_median_ms`, `frame_p95_ms` (Zeichenzeit pro Bild), `ruckler`, `cpu_prozess_pct` (ganzer Prozess aus `/proc/self/stat`, in Prozent eines Kerns), `cpu_haupt_pct` (Hauptthread), `cpu_kerne`, `bitmap_kb` und `figur_kb`. Weil `bereit` schon in der ersten Sekunde kommt, gelten fps und CPU dort für die Zeit seit dem ersten Bild (`messfenster`). Die Werte über volle Sekunden stehen 5 s später im Plugin-Status. Ist `/proc/self/stat` nicht lesbar, steht der Grund in `cpu_fehler` und im Status. Dieselben Werte stehen in der Messzeile unter der Szene und beim Schließen im Plugin-Status.
-
-## Bildschirmschoner „Wetterszene“
-- Registriert sich über `publishScreensaverView("wetter", "Wetterszene", …)` als nativer Kiosk-Satellite-Bildschirmschoner. Aktivierung, Timeout, Helligkeit, Aufwecken bei Berührung/Bewegung und Pixel-Shift bleiben vollständig bei Kiosk Satellite.
-- Vollbild-Wetterszene ohne schwarze Balken mit allen **6 Landschaften** (täglicher Wechsel oder fest wählbar in den Einstellungen): **Meer** (Leuchtturm mit mehrschichtigem Lichtkegel, Buhnen, Treibholz, Düne & Strandhafer), **Tal** (Alpenkamm, Dorf mit Kirche, Fluss & Felskanzel), **See** (Schwarzwald-Berge, Hütte mit Kaminrauch & Seeglitzer), **Lichtung** (Wald, Rehe, Zelt, flackerndes Lagerfeuer & Glühwürmchen), **Gipfel** (Bergketten, Wolkenmeer & Gipfelkreuz) und **Felder** (drehende Windräder, Bauernhof, Pappelallee & Heuballen) — jeweils mit mehrlagigem organischem Gras, Vögeln am Taghimmel, echten Sternbildern, Mondphase und Figur des Tages.
-- **Wettervorschau in den Einstellungen:** Direkt in den Plugin-Einstellungen unter **Wettervorschau** lässt sich – genau wie bei Kiosk Satellites integrierter Wettervorschau – mit einem Schalter zwischen Live-Wetter und einer gewählten Kombination aus **Landschaft**, **Wettertyp** und **Tageszeit** (Morgendämmerung, Tag, Abenddämmerung, Blaue Stunde, Nacht oder 24h-Zeitraffer) umschalten. Zusätzlich bietet der Befehl `schoner` eine direkte Vollbild-Vorschau mit ausblendbarer Steuerleiste.
-- Alle UI-Elemente lassen sich in den Plugin-Einstellungen unter **Bildschirmschoner** einzeln an- und abschalten: schlanke Uhr (`groß` oder `kompakt`, optional mit Sekunden), Datum, Wetterzeile mit Regen- oder Tageshöchst-/Tiefstwert, bis zu zwei Hinweis-/Warnungskarten oben rechts (`persistent_notification/subscribe` sowie aktive Wetter-/Bevölkerungswarnungen) und eine kompakte Musik-Anzeige unten links mit Album-Cover bei aktivem Media-Player (mit konfigurierbarer Ausschlussliste).
-- Sparsame, VSync-synchronisierte Bildrate ohne 60-Hz-Mikroruckler: bei ruhigem Wetter standardmäßig 15 fps (exakte 60-Hz-Teiler einstellbar), bei Regen, Schnee, Hagel, Wind oder Gewitter flüssige 60 fps (oder 30 fps wählbar). Pausiert sofort, sobald der Bildschirm aus oder die View nicht sichtbar ist.
-
-## Mein Tag & Vorlese-Ansicht
-- Abonniert `echo_show/news/subscribe` (abschaltbar in den Einstellungen unter **Mein Tag**) und öffnet automatisch die native Vollbild-Ansicht, sobald „Mein Tag“ oder eine Nachrichten-Vorlesung startet; nach Ende schließt sie sich nach 2,5 s wieder.
-- **Phase 1 (Briefing & Übersicht):** Live-Wetterszene im Hintergrund, Datum/Uhrzeit, tageszeitabhängige Begrüßung, Temperatur & Wetterlage, kompakte Info-Chips (Schirm, Glätte, Termine, Müll, Einkaufsliste), der **Heute-Stundenverlauf** (8 Stunden mit farbiger Temperaturkurve, Vektor-Wettersymbolen und Regen-Wellenbalken) sowie die schwebende **Vorlese-Karaoke-Leiste** mit animiertem Orb, Wort-für-Wort-Hervorhebung, Pause/Weiter/Stopp und Fortschrittsbalken.
-- **Phase 2 (Nachrichten-Story & „Mehr dazu“):** Vollbild-Story-Ansicht mit GPU-weichgezeichnetem Artikelbild-Hintergrund, Segment-Fortschrittsbalken, Quellen-Chip, großem Karaoke-Text, animierter Sprachwelle, Steuerung (`zurueck`, `pause`/`weiter`, `naechste`, `mehr`, `stopp` über `echo_show/news/steuern`) und „Als Nächstes“-Vorschaukarte.
-- **Demo/Vorschau:** Über `ks://plugin/echo-show-test/morgen/demo`, `/morgen/story` oder `/morgen/mehr` jederzeit ohne laufende Ansage testbar.
-
-## Abos
-Alle Home-Assistant-Abos (Ansicht-Anfragen, Personen, Wetter, Benachrichtigungen, Schoner-Infos und Nachrichten/Mein Tag) melden sich selbst neu an, wenn Home Assistant sie beendet oder ablehnt, zum Beispiel nach einem Neustart: nach 5 s, 10 s, 30 s und danach alle 60 s.
-
-## Rechte
-- `overlay`: die Ansichten
-- `screensaver`: nativer Bildschirmschoner „Wetterszene“
-- `ha`: Kalender, Personen/Verlauf, Wetter/Sonne/Heimkoordinaten, Benachrichtigungen, Warnungen, aktive Media-Player, Abo/Meldungen der Echo-Show-Integration sowie Vorlese-Steuerung (`echo_show/news/steuern`)
-- `host.read`: freier RAM, Bildschirmschoner, Bildschirmstatus und Home-Assistant-Basis-URL (für Album-Cover und Artikelbilder)
-
-## Bauen
-Lokal mit `./build.sh` (JDK 17+, Android SDK). Releases baut GitHub Actions: Ein Tag `v<version>` erstellt das Release und hängt ZIP, Prüfsumme und Manifest an.
-
-## Lizenz
-Apache-2.0. Die SDK-Schnittstellen unter `sdk/` stammen aus [kiosk-satellite-plugins](https://github.com/jxlarrea/kiosk-satellite-plugins) (Apache-2.0) und werden nur zum Kompilieren gebraucht.
+## Abos & Rechte
+- Alle Home-Assistant-Abos (maximal 8 gleichzeitige `haSubscribe`-Aufrufe, deutlich unter dem KS-Limit von 16) melden sich nach Unterbrechungen mit Backoff (5 s, 10 s, 30 s, 60 s) automatisch neu an.
+- Rechte: `overlay`, `screensaver`, `ha`, `host.read`.
+- Lizenz: Apache-2.0. Die SDK-Schnittstellen unter `sdk/` stammen aus [kiosk-satellite-plugins](https://github.com/jxlarrea/kiosk-satellite-plugins) (Apache-2.0).

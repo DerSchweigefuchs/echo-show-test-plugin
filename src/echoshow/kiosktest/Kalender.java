@@ -2,6 +2,7 @@ package echoshow.kiosktest;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -12,17 +13,36 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Read-only calendar data: calendar.get_events (return_response) through host.haCall, supporting Tag / 3 Tage / Woche / Monat / Liste + AI marked days. */
+/**
+ * Calendar data: echo_show/kalender/daten (primary) + calendar.get_events fallback through host.haCall,
+ * supporting Tag / 3 Tage / Woche / Monat / Liste, holidays, waste pickups, and AI marked days.
+ */
 final class Kalender {
     static final Pattern TAG = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
     private static final Pattern ENTITY = Pattern.compile("calendar\\.[a-z0-9_]{1,250}");
     static final int[] FARBEN = {0xFF6FB3F2, 0xFFF2B45C, 0xFF6CC483, 0xFFB49CF2, 0xFFF28B82, 0xFF7FD6D0, 0xFFE6A1D8, 0xFFC9D36A};
 
     static final class Termin {
-        String uid = "", datum = "", zeit = "", titel = "", ort = "", beschreibung = "", kalender = "", sortierung = "";
+        String uid = "", datum = "", datumKey = "", zeit = "", titel = "", ort = "", beschreibung = "", kalender = "", kalenderId = "", icon = "", sortierung = "";
         long startMs, endeMs;
-        boolean ganztag;
+        boolean ganztag, muell, erledigt;
         int farbe;
+    }
+
+    static final class Konfig {
+        List<String> ansichten = new ArrayList<>(Arrays.asList("tag", "3tage", "woche", "monat", "liste"));
+        String start = "woche";
+        String woche = "mo-so";
+        String schreiben = "";
+        String schreibenName = "";
+        int listeTage = 14;
+        boolean mitFeiertage = true;
+    }
+
+    static final class Ergebnis {
+        List<Termin> termine = new ArrayList<>();
+        Map<String, String> feiertage = new LinkedHashMap<>();
+        Konfig konfig = new Konfig();
     }
 
     /** Requested date range, initial view mode, and highlighted days (from param: tag, zeitraum, tage). */
@@ -31,12 +51,18 @@ final class Kalender {
         final int tageAnzahl;
         final Set<String> markiert;
         final String zeitraum;   // "tag" | "wochenende" | "woche" | "monat" | "liste" | "3tage"
+        final boolean explizit;
 
         Spanne(Calendar start, int tageAnzahl, Set<String> markiert, String zeitraum) {
+            this(start, tageAnzahl, markiert, zeitraum, false);
+        }
+
+        Spanne(Calendar start, int tageAnzahl, Set<String> markiert, String zeitraum, boolean explizit) {
             this.start = start;
             this.tageAnzahl = tageAnzahl;
             this.markiert = markiert;
             this.zeitraum = zeitraum;
+            this.explizit = explizit;
         }
     }
 
@@ -109,41 +135,47 @@ final class Kalender {
             Calendar so = (Calendar) sa.clone();
             so.add(Calendar.DAY_OF_MONTH, 1);
             markiert.add(datumKey(so));
-            return new Spanne(montag(sa), 7, markiert, "woche");
+            return new Spanne(montag(sa), 7, markiert, "woche", true);
         }
 
         if (!tageListe.isEmpty()) {
             Collections.sort(tageListe);
             Calendar d0 = tag(tageListe.get(0));
             if (tageListe.size() == 1 && "tag".equals(zr)) {
-                return new Spanne(d0, 1, markiert, "tag");
+                return new Spanne(d0, 1, markiert, "tag", true);
             }
-            return new Spanne(montag(d0), 7, markiert, "woche");
+            return new Spanne(montag(d0), 7, markiert, "woche", true);
         }
 
         if ("tag".equals(zr)) {
             Calendar s = tag(tagStr);
             if (tagStr != null && TAG.matcher(tagStr).matches()) markiert.add(datumKey(s));
-            return new Spanne(s, 1, markiert, "tag");
+            return new Spanne(s, 1, markiert, "tag", true);
         }
         if ("3tage".equals(zr)) {
             Calendar s = tag(tagStr);
             if (tagStr != null && TAG.matcher(tagStr).matches()) markiert.add(datumKey(s));
-            return new Spanne(s, 3, markiert, "3tage");
+            return new Spanne(s, 3, markiert, "3tage", true);
         }
         if ("monat".equals(zr)) {
             Calendar s = tag(tagStr);
             s.set(Calendar.DAY_OF_MONTH, 1);
-            return new Spanne(montag(s), 42, markiert, "monat");
+            return new Spanne(montag(s), 42, markiert, "monat", true);
         }
         if ("liste".equals(zr)) {
-            return new Spanne(tag(tagStr), 14, markiert, "liste");
+            return new Spanne(tag(tagStr), 14, markiert, "liste", true);
+        }
+        if ("woche".equals(zr)) {
+            Calendar s = tag(tagStr);
+            if (tagStr != null && TAG.matcher(tagStr).matches()) markiert.add(datumKey(s));
+            return new Spanne(montag(s), 7, markiert, "woche", true);
         }
 
         // Default matching kalender.py: Woche (Mo–So)
         Calendar s = tag(tagStr);
-        if (tagStr != null && TAG.matcher(tagStr).matches()) markiert.add(datumKey(s));
-        return new Spanne(montag(s), 7, markiert, "woche");
+        boolean hasTag = tagStr != null && TAG.matcher(tagStr).matches();
+        if (hasTag) markiert.add(datumKey(s));
+        return new Spanne(montag(s), 7, markiert, "woche", hasTag);
     }
 
     /** ISO 8601 with the device's offset, e.g. 2026-11-25T00:00:00+01:00. */
@@ -154,6 +186,138 @@ final class Kalender {
         char sign = off < 0 ? '-' : '+';
         off = Math.abs(off);
         return f.format(c.getTime()) + String.format(Locale.ROOT, "%c%02d:%02d", sign, off / 60, off % 60);
+    }
+
+    /** Integration WebSocket request: echo_show/kalender/daten. */
+    static Map<String, Object> anfrageEcho(Calendar start, int tageAnzahl) {
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "echo_show/kalender/daten");
+        msg.put("start", datumKey(start));
+        msg.put("tage", Math.max(1, Math.min(45, tageAnzahl)));
+        return msg;
+    }
+
+    /** Parses echo_show/kalender/daten response into events, holidays map, and view config. */
+    static Ergebnis lesenEchoDaten(Object data) {
+        Ergebnis erg = new Ergebnis();
+        if (!(data instanceof Map)) return erg;
+        Map<?, ?> root = (Map<?, ?>) data;
+
+        // 1. Konfig
+        if (root.get("konfig") instanceof Map) {
+            Map<?, ?> km = (Map<?, ?>) root.get("konfig");
+            Konfig cfg = erg.konfig;
+            if (km.get("ansichten") instanceof List) {
+                List<String> ans = new ArrayList<>();
+                for (Object o : (List<?>) km.get("ansichten")) {
+                    String a = text(o).toLowerCase(Locale.ROOT);
+                    if (("tag".equals(a) || "3tage".equals(a) || "woche".equals(a) || "monat".equals(a) || "liste".equals(a)) && !ans.contains(a)) {
+                        ans.add(a);
+                    }
+                }
+                if (!ans.isEmpty()) cfg.ansichten = ans;
+            }
+            String st = text(km.get("start")).toLowerCase(Locale.ROOT);
+            if (!st.isEmpty()) cfg.start = st;
+            String wo = text(km.get("woche")).toLowerCase(Locale.ROOT);
+            if ("mo-so".equals(wo) || "mo-fr".equals(wo) || "ab_heute".equals(wo)) cfg.woche = wo;
+            if (km.get("liste_tage") instanceof Number) {
+                cfg.listeTage = Math.max(1, Math.min(45, ((Number) km.get("liste_tage")).intValue()));
+            }
+            if (km.containsKey("feiertage")) cfg.mitFeiertage = !Boolean.FALSE.equals(km.get("feiertage"));
+            cfg.schreiben = text(km.get("schreiben"));
+            cfg.schreibenName = text(km.get("schreiben_name"));
+            if (cfg.schreibenName.isEmpty() && !cfg.schreiben.isEmpty() && km.get("kalender") instanceof List) {
+                for (Object o : (List<?>) km.get("kalender")) {
+                    if (o instanceof Map && cfg.schreiben.equals(text(((Map<?, ?>) o).get("id")))) {
+                        cfg.schreibenName = text(((Map<?, ?>) o).get("name"));
+                        break;
+                    }
+                }
+            }
+            if (cfg.schreibenName.isEmpty() && !cfg.schreiben.isEmpty()) cfg.schreibenName = name(cfg.schreiben);
+        }
+
+        // 2. Feiertage ("YYYY-MM-DD" -> "Name")
+        if (root.get("feiertage") instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) root.get("feiertage")).entrySet()) {
+                String dk = text(e.getKey());
+                if (!TAG.matcher(dk).matches()) continue;
+                Object val = e.getValue();
+                String nm = "";
+                if (val instanceof List) {
+                    StringBuilder sb = new StringBuilder();
+                    for (Object x : (List<?>) val) {
+                        String xs = text(x);
+                        if (!xs.isEmpty()) {
+                            if (sb.length() > 0) sb.append(", ");
+                            sb.append(xs);
+                        }
+                    }
+                    nm = sb.toString();
+                } else {
+                    nm = text(val);
+                }
+                if (!nm.isEmpty()) erg.feiertage.put(dk, nm);
+            }
+        }
+
+        // 3. Termine
+        if (root.get("termine") instanceof List) {
+            int idx = 0;
+            for (Object o : (List<?>) root.get("termine")) {
+                if (!(o instanceof Map)) continue;
+                Map<?, ?> ev = (Map<?, ?>) o;
+                Termin t = new Termin();
+                t.titel = text(ev.get("titel"));
+                if (t.titel.isEmpty()) t.titel = text(ev.get("summary"));
+                if (t.titel.isEmpty()) t.titel = "(ohne Titel)";
+                t.ort = text(ev.get("ort"));
+                t.beschreibung = text(ev.get("beschreibung"));
+                t.kalender = text(ev.get("kalender"));
+                t.kalenderId = text(ev.get("kalender_id"));
+                t.icon = text(ev.get("icon"));
+                t.muell = Boolean.TRUE.equals(ev.get("muell"));
+                t.erledigt = Boolean.TRUE.equals(ev.get("erledigt"));
+                t.farbe = parseFarbe(ev.get("farbe"), FARBEN[idx % FARBEN.length]);
+
+                String sRaw = text(ev.get("start"));
+                String eRaw = text(ev.get("ende"));
+                String dRaw = text(ev.get("datum"));
+                if (dRaw.length() > 10) dRaw = dRaw.substring(0, 10);
+                t.ganztag = Boolean.TRUE.equals(ev.get("ganztag")) || sRaw.length() == 10 || (sRaw.isEmpty() && !dRaw.isEmpty());
+
+                if (t.ganztag) {
+                    String sd = sRaw.length() >= 10 ? sRaw.substring(0, 10) : dRaw;
+                    Calendar cs = tag(sd);
+                    Calendar ce = eRaw.length() >= 10 ? tag(eRaw.substring(0, 10)) : (Calendar) cs.clone();
+                    if (ce.getTimeInMillis() <= cs.getTimeInMillis()) ce.add(Calendar.DAY_OF_MONTH, 1);
+                    t.startMs = cs.getTimeInMillis();
+                    t.endeMs = ce.getTimeInMillis();
+                    t.datum = !dRaw.isEmpty() ? dRaw : datumKey(cs);
+                    String zRaw = text(ev.get("zeit"));
+                    t.zeit = zRaw.isEmpty() ? "ganztägig" : zRaw;
+                } else {
+                    t.startMs = parseIso(sRaw);
+                    t.endeMs = parseIso(eRaw);
+                    if (t.endeMs <= t.startMs) t.endeMs = t.startMs + 3_600_000L;
+                    t.datum = !dRaw.isEmpty() ? dRaw : (sRaw.length() >= 10 ? sRaw.substring(0, 10) : datumKey(t.startMs));
+                    String zRaw = text(ev.get("zeit"));
+                    t.zeit = zRaw.isEmpty() ? (hm(t.startMs) + "–" + hm(t.endeMs)) : zRaw;
+                }
+                t.datumKey = t.datum;
+                String uid = text(ev.get("uid"));
+                t.uid = (uid.isEmpty() ? (t.kalenderId.isEmpty() ? t.kalender : t.kalenderId) + "#" + idx : uid);
+                if (!t.uid.contains("|")) t.uid = t.uid + "|" + t.startMs;
+                idx++;
+                erg.termine.add(t);
+            }
+        }
+        Collections.sort(erg.termine, (a, b) -> {
+            if (a.ganztag != b.ganztag) return a.ganztag ? -1 : 1;
+            return Long.compare(a.startMs, b.startMs);
+        });
+        return erg;
     }
 
     static Map<String, Object> anfrage(String entities, Calendar start, int tageAnzahl) {
@@ -213,6 +377,7 @@ final class Kalender {
                 t.ort = text(ev.get("location"));
                 t.beschreibung = text(ev.get("description"));
                 t.kalender = kalName;
+                t.kalenderId = entity;
                 t.farbe = farbe;
                 t.ganztag = sRaw.length() == 10;
                 if (t.ganztag) {
@@ -230,6 +395,7 @@ final class Kalender {
                     t.datum = sRaw.length() >= 10 ? sRaw.substring(0, 10) : datumKey(t.startMs);
                     t.zeit = hm(t.startMs) + "–" + hm(t.endeMs);
                 }
+                t.datumKey = t.datum;
                 String uid = text(ev.get("uid"));
                 t.uid = (uid.isEmpty() ? entity + "#" + idx : uid) + "|" + t.startMs;
                 idx++;
@@ -241,6 +407,18 @@ final class Kalender {
             return Long.compare(a.startMs, b.startMs);
         });
         return out;
+    }
+
+    private static int parseFarbe(Object raw, int fallback) {
+        if (raw instanceof Number) return ((Number) raw).intValue();
+        String s = text(raw);
+        if (s.startsWith("#") && (s.length() == 7 || s.length() == 9)) {
+            try {
+                if (s.length() == 7) return 0xFF000000 | Integer.parseInt(s.substring(1), 16);
+                return (int) Long.parseLong(s.substring(1), 16);
+            } catch (NumberFormatException ignored) {}
+        }
+        return fallback;
     }
 
     private static long parseIso(String s) {
@@ -292,7 +470,8 @@ final class Kalender {
         Termin t = new Termin();
         t.uid = uid; t.titel = titel; t.ort = ort; t.kalender = kal; t.farbe = col; t.ganztag = ganz;
         t.startMs = s.getTimeInMillis(); t.endeMs = e.getTimeInMillis();
-        t.datum = datumKey(s); t.zeit = ganz ? "ganztägig" : hm(t.startMs) + "–" + hm(t.endeMs);
+        t.datum = datumKey(s); t.datumKey = t.datum;
+        t.zeit = ganz ? "ganztägig" : hm(t.startMs) + "–" + hm(t.endeMs);
         return t;
     }
 

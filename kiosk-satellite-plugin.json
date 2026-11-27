@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "apiVersion": 1,
   "id": "echo-show-test",
-  "name": "Echo Show Test-Ansichten",
-  "version": "0.10.2",
+  "name": "Echo Show Ansichten",
+  "version": "0.11.0",
   "minAndroidSdk": 24,
   "minAppVersion": "2026.11.16",
   "entryClass": "echoshow.kiosktest.EchoShowTestPlugin",
-  "description": "Native Vollbild-Ansichten (Mein Tag mit Vorlese-Karaoke & Nachrichten-Story, Live-Wetterszene mit 6 Landschaften und Figur des Tages, Kalender, Timer, Liste, Anwesenheit) sowie nativer Bildschirmschoner „Wetterszene“ mit Wettervorschau, Uhr, Datum, Wetter, Hinweisen und Musik-Anzeige.",
+  "description": "Alle 11 nativen Vollbild-Ansichten (Mein Tag mit Vorlese-Karaoke & Nachrichten-Story, Wetterszene mit 6 Landschaften, Kalender, Timer & Wecker, Anwesenheit, Musik-Player, Waschmaschine, Gäste-WLAN, Einkaufsliste, Müllabfuhr und Server) sowie nativer Bildschirmschoner „Wetterszene“ mit Live-Synchronisation der Home-Assistant-Einstellungen.",
   "author": "Echo Show Projekt",
   "license": "Apache-2.0",
   "capabilities": [
@@ -23,7 +23,7 @@
       "title": "Auf Ansicht-Anfragen hören",
       "default": true,
       "group": "Home Assistant",
-      "description": "Abonniert echo_show/ansicht/abo und öffnet nur die Seiten test-kalender, test-timer und test-liste. Alle anderen Seiten werden ignoriert."
+      "description": "Abonniert echo_show/ansicht/abo für alle 11 nativen Ansichten und meldet Status & Messwerte zurück."
     },
     {
       "key": "dashboard",
@@ -31,56 +31,7 @@
       "title": "Dashboard-Pfad",
       "default": "/echo-show/",
       "group": "Home Assistant",
-      "description": "Dashboard, für das die Ansicht-Anfragen kommen."
-    },
-    {
-      "key": "kalender",
-      "type": "string",
-      "title": "Kalender",
-      "default": "all",
-      "group": "Kalender-Test",
-      "description": "Kalender-Entitäten, mit Komma getrennt, oder all für alle. Gelesen wird nur mit calendar.get_events."
-    },
-    {
-      "key": "timerSekunden",
-      "type": "number",
-      "title": "Timer-Dauer",
-      "default": 300,
-      "min": 5,
-      "max": 3600,
-      "step": 5,
-      "unit": "s",
-      "input": "field",
-      "group": "Timer-Test",
-      "description": "Startwert des Test-Countdowns. Ein Link-Argument wie /zeigen/timer/90 überschreibt ihn."
-    },
-    {
-      "key": "timerModus",
-      "type": "select",
-      "title": "Timer-Animation",
-      "default": "sekündlich",
-      "options": [
-        "sekündlich",
-        "flüssig"
-      ],
-      "group": "Timer-Test",
-      "description": "sekündlich: Ring und Ziffern springen jede Sekunde. flüssig: der Ring läuft mit jedem Frame (Lasttest)."
-    },
-    {
-      "key": "personen",
-      "type": "string",
-      "title": "Personen",
-      "default": "alle",
-      "group": "Anwesenheit-Test",
-      "description": "alle oder person-Entitäten mit Komma getrennt, in der gewünschten Reihenfolge. Gelesen über render_template."
-    },
-    {
-      "key": "verlaufCache",
-      "type": "boolean",
-      "title": "Verlauf 5 Minuten merken",
-      "default": true,
-      "group": "Anwesenheit-Test",
-      "description": "Wie die Lovelace-Seite: Der 7-Tage-Verlauf wird nur neu geladen, wenn jemand kommt oder geht oder er älter als 5 Minuten ist. Aus: bei jedem Öffnen neu laden."
+      "description": "Dashboard, für das die Ansicht-Anfragen kommen und dessen Konfiguration aus echo_show/plugin/konfig geladen wird."
     },
     {
       "key": "wetterEntity",
@@ -88,7 +39,7 @@
       "title": "Wetter-Entität",
       "default": "",
       "group": "Wetter & Landschaft",
-      "description": "weather-Entität für die Szene. Leer: die erste weather-Entität. Sonne aus sun.sun, Mond und Sterne aus zone.home, alles nur lesend und nur zur Laufzeit."
+      "description": "Optionales Überschreiben der weather-Entität. Leer: übernimmt die Einstellung aus dem Echo-Show-Panel (sonst erste weather-Entität). Sonne aus sun.sun, Mond und Sterne aus zone.home."
     },
     {
       "key": "szeneOrt",
@@ -318,7 +269,7 @@
   "commands": [
     {
       "id": "zeigen",
-      "title": "Ansicht zeigen (Link: wetter, schoner, morgen, …)"
+      "title": "Ansicht zeigen (Link: wetter, kalender, player, einkaufsliste, …)"
     },
     {
       "id": "morgen",
@@ -326,23 +277,43 @@
     },
     {
       "id": "kalender",
-      "title": "Kalender-Test zeigen"
+      "title": "Kalender zeigen"
     },
     {
       "id": "timer",
-      "title": "Timer-Test zeigen"
-    },
-    {
-      "id": "liste",
-      "title": "Listen-Test zeigen"
+      "title": "Timer & Wecker zeigen"
     },
     {
       "id": "anwesenheit",
-      "title": "Anwesenheit-Test zeigen"
+      "title": "Anwesenheit zeigen"
     },
     {
       "id": "wetter",
       "title": "Wetter-Szene zeigen (Link: wetter/zeitraffer oder wetter/HH:MM)"
+    },
+    {
+      "id": "player",
+      "title": "Musik-Player zeigen"
+    },
+    {
+      "id": "waschmaschine",
+      "title": "Waschmaschine zeigen (Link: waschmaschine/verlauf)"
+    },
+    {
+      "id": "gaestewlan",
+      "title": "Gäste-WLAN & QR-Code zeigen"
+    },
+    {
+      "id": "einkaufsliste",
+      "title": "Einkaufsliste zeigen (Link: einkaufsliste/<todo.id>)"
+    },
+    {
+      "id": "muell",
+      "title": "Müllabfuhr zeigen"
+    },
+    {
+      "id": "server",
+      "title": "Server-Status zeigen (Link: server/dienste)"
     },
     {
       "id": "schoner",
@@ -350,7 +321,7 @@
     },
     {
       "id": "schliessen",
-      "title": "Test-Ansicht schließen"
+      "title": "Aktive Ansicht schließen"
     }
   ]
 }

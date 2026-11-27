@@ -65,41 +65,75 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     // ==== layers shared by all open views (main thread; builds run on one background thread) ===========================
 
     private static final class Ebenen {
+        static final class WolkenSlot {
+            String wolkenKey = "", bautKey;     // built / being built
+            long wolkenFehlerBis;               // backoff after a failed background build
+            List<Wolken.Reihe> reihen = new ArrayList<>();
+            Bitmap[] wolken = new Bitmap[0];
+            BitmapShader[] wolkenShader = new BitmapShader[0];
+            float[] wolkenY0 = new float[0], wolkenY1 = new float[0];
+            Bitmap[] vorher;                    // the previous set while it fades out
+            BitmapShader[] vorherShader;
+            float[] vorherY0, vorherY1;
+            List<Wolken.Reihe> vorherReihen;
+            long wechselSeit;                   // uptime of the last swap
+            int version;                        // counts swaps, so views rebuild their row filters
+
+            void reset() {
+                recyceln(wolken);
+                recyceln(vorher);
+                wolken = new Bitmap[0];
+                wolkenShader = new BitmapShader[0];
+                wolkenY0 = wolkenY1 = new float[0];
+                reihen = new ArrayList<>();
+                vorher = null;
+                vorherShader = null;
+                vorherY0 = vorherY1 = null;
+                vorherReihen = null;
+                wolkenKey = "";
+                bautKey = null;
+                wolkenFehlerBis = 0;
+            }
+
+            long bytes() {
+                long n = 0;
+                for (Bitmap b : wolken) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
+                if (vorher != null) for (Bitmap b : vorher) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
+                return n;
+            }
+        }
+
         int aktiv;                          // running (visible, unpaused) views
-        String wolkenKey = "", bautKey;     // built / being built
-        long wolkenFehlerBis, figurFehlerBis;   // backoff after a failed background build
-        List<Wolken.Reihe> reihen = new ArrayList<>();
-        Bitmap[] wolken = new Bitmap[0];
-        BitmapShader[] wolkenShader = new BitmapShader[0];
-        float[] wolkenY0 = new float[0], wolkenY1 = new float[0];
-        Bitmap[] vorher;                    // the previous set while it fades out
-        BitmapShader[] vorherShader;
-        float[] vorherY0, vorherY1;
-        List<Wolken.Reihe> vorherReihen;
-        long wechselSeit;                   // uptime of the last swap
-        int version;                        // counts swaps, so views rebuild their row filters
+        final WolkenSlot seiteWolken = new WolkenSlot();     // page horizon (wolkenYh <= 300)
+        final WolkenSlot schonerWolken = new WolkenSlot();   // screensaver horizon (wolkenYh > 300)
+        long figurFehlerBis;                // backoff after a failed background build
         Bitmap mond;
+        float mondSkala = 1f;
         Bitmap[] figur;                     // layers: body, head, front, tail (SvgMini)
         float[][] figurLage;                // per layer {left, top} in figure units, and pivots of head / tail
         float[] figurDreh;                  // {head x, y, tail x, y} in figure units
+        float figurSkala = 1f;
         String figurKey = "", figurBaut;
         String mondKey = "";
         boolean mondBaut;
         final List<Object[]> alt = new ArrayList<>();   // {Bitmap[], recycle after this draw count}
+
+        WolkenSlot slot(float wyh) { return wyh > 300f ? schonerWolken : seiteWolken; }
     }
 
     private static final Ebenen E = new Ebenen();
     private static Handler haupt;
     private static ExecutorService bauer;
     private static long zeichnungen;        // onDraw calls of all views, for the deferred recycling
-    private static final long FREIGABE_MS = 30_000L;
-    private static final Runnable FREIGABE = WetterView::allesFrei;
+    private static volatile boolean beendet;
+    private static volatile float letzteSeiteSkala;
 
     private static synchronized ExecutorService bauer() {
+        beendet = false;
         if (bauer == null) bauer = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "wetter-ebenen");
             t.setDaemon(true);
-            t.setPriority(Thread.MIN_PRIORITY + 1);
+            t.setPriority(Thread.NORM_PRIORITY - 1);
             return t;
         });
         return bauer;
@@ -112,6 +146,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     /** The plugin stops (any thread): end the build thread now, give the bitmaps back on the main thread. */
     static synchronized void beenden() {
+        beendet = true;
         if (bauer != null) bauer.shutdownNow();
         bauer = null;
         haupt().post(() -> {
@@ -121,8 +156,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
 
     private static void allesFrei() {
         if (E.aktiv > 0) return;
-        recyceln(E.wolken);
-        recyceln(E.vorher);
+        E.seiteWolken.reset();
+        E.schonerWolken.reset();
         for (Object[] a : E.alt) recyceln((Bitmap[]) a[0]);
         E.alt.clear();
         if (E.mond != null) E.mond.recycle();
@@ -132,17 +167,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         E.figurKey = "";
         E.figurBaut = null;
         E.mondKey = "";
-        E.wolken = new Bitmap[0];
-        E.wolkenShader = new BitmapShader[0];
-        E.wolkenY0 = E.wolkenY1 = new float[0];
-        E.reihen = new ArrayList<>();
-        E.vorher = null;
-        E.vorherShader = null;
-        E.vorherY0 = E.vorherY1 = null;
-        E.vorherReihen = null;
-        E.wolkenKey = "";
-        E.bautKey = null;
-        E.wolkenFehlerBis = E.figurFehlerBis = 0;
+        E.mondBaut = false;
+        E.figurFehlerBis = 0;
     }
 
     private static void recyceln(Bitmap[] b) {
@@ -156,9 +182,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     }
 
     static long bitmapBytes() {
-        long n = 0;
-        for (Bitmap b : E.wolken) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
-        if (E.vorher != null) for (Bitmap b : E.vorher) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
+        long n = E.seiteWolken.bytes() + E.schonerWolken.bytes();
         for (Object[] a : E.alt) for (Bitmap b : (Bitmap[]) a[0]) if (b != null && !b.isRecycled()) n += b.getAllocationByteCount();
         if (E.mond != null && !E.mond.isRecycled()) n += E.mond.getAllocationByteCount();
         n += figurBytes();
@@ -189,6 +213,9 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private volatile SchonerDaten.Optionen schonerOpt;
     private volatile SchonerDaten.Zustand schonerZustand;
     private volatile String ortWahl = "auto";
+    private List<String> szeneOrte;
+    private boolean szeneSterne = true, szeneNamen = true, szeneBlitze = true, szeneFigur = true, szeneTiere = true;
+    private String wetterNameOverride = "";
     private String ort = "meer", testCond, vorschauZeit;
     private Runnable tapAktion;
     private VorneView vorne;
@@ -579,7 +606,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         text.setTypeface(schrift);
         setClickable(!schoner || vorschau);
         partikel();
-        wolkenSchonDa = E.wolken.length > 0;
+        beendet = false;
+        wolkenSchonDa = E.slot(schoner ? 400f : Wolken.YH).wolken.length > 0;
         figurSchonDa = E.figur != null;
     }
 
@@ -616,6 +644,31 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         String n = wahl == null || wahl.trim().isEmpty() ? "auto" : wahl.trim().toLowerCase(Locale.ROOT);
         if (n.equals(ortWahl)) return;
         ortWahl = n;
+        momentUm = -1;
+        himmelKey = "";
+        invalidate();
+    }
+
+    /** Optional override for the header location name (from HA panel wetter_name). */
+    void setWetterName(String name) {
+        String n = name == null ? "" : name.trim();
+        if (n.equals(wetterNameOverride)) return;
+        wetterNameOverride = n;
+        if (daten != null) {
+            tOrt = !wetterNameOverride.isEmpty() ? wetterNameOverride : daten.name;
+            invalidate();
+            if (vorne != null) vorne.invalidate();
+        }
+    }
+
+    /** Live HA panel scene flags (orte, sterne, namen, blitze, figur, tiere). */
+    void setSzeneOptionen(List<String> orte, boolean sterne, boolean namenOpt, boolean blitze, boolean figurOpt, boolean tiere) {
+        szeneOrte = orte == null ? null : new ArrayList<>(orte);
+        szeneSterne = sterne;
+        szeneNamen = namenOpt;
+        szeneBlitze = blitze;
+        szeneFigur = figurOpt;
+        szeneTiere = tiere;
         momentUm = -1;
         himmelKey = "";
         invalidate();
@@ -732,7 +785,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             himmelKey = "";
         }
         if (d != null) {
-            tOrt = d.name;
+            tOrt = !wetterNameOverride.isEmpty() ? wetterNameOverride : d.name;
             tTemp = (d.temp == null ? "–" : String.valueOf(Math.round(d.temp))) + "°";
             tZustand = lage.name();
             tZeilen = WetterLage.zeilen(d);
@@ -769,10 +822,6 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             vorhersageBitmap = null;
             vorhersageKey = "";
         }
-        if (E.aktiv == 0) {
-            haupt().removeCallbacks(FREIGABE);
-            haupt().postDelayed(FREIGABE, FREIGABE_MS);
-        }
         super.onDetachedFromWindow();
     }
 
@@ -794,7 +843,6 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         Choreographer ch = Choreographer.getInstance();
         if (soll) {
             E.aktiv++;
-            haupt().removeCallbacks(FREIGABE);
             if (vorne != null) setLayerType(LAYER_TYPE_HARDWARE, null);
             letzterFrame = 0;
             letzteZeichnung = 0;
@@ -804,10 +852,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             ch.removeFrameCallback(this);
             if (vorne != null) setLayerType(LAYER_TYPE_NONE, null);
             E.aktiv = Math.max(0, E.aktiv - 1);
-            if (E.aktiv == 0) {
-                haupt().removeCallbacks(FREIGABE);
-                haupt().postDelayed(FREIGABE, FREIGABE_MS);
-            }
+            if (E.aktiv == 0 && beendet) allesFrei();
         }
     }
 
@@ -815,7 +860,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private int vsyncTeiler() {
         int ziel;
         if (!schoner) {
-            ziel = basisFps;
+            ziel = (vorne != null && !"zeitraffer".equals(modus)) ? Math.min(basisFps, 15) : basisFps;
         } else if (vorne != null) {
             // Background cached in GPU hardware layer: calm 12-15 fps is plenty for drifting clouds/lighthouse/surf,
             // while VorneView animates rain/snow/hail/wind at full 60 fps on top of the cached texture!
@@ -1053,6 +1098,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         skala = neu;
         viewH = neuViewH;
+        if (!schoner) letzteSeiteSkala = skala;
         if (schoner) {
             dx = 0;
             dy = 0;
@@ -1095,8 +1141,8 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         sternenhimmel(c, t);
         mondZeichnen(c);
         wolken(c, t, anim);
-        blitzWolken(c, t);
-        landschaften.voegel(c, lage, licht, t, landY);
+        if (szeneBlitze) blitzWolken(c, t);
+        if (szeneTiere) landschaften.voegel(c, lage, licht, t, landY);
         // Subtle atmospheric horizon haze right above the sea
         if ("meer".equals(ort) && dunstHorizont != null) {
             mitShader(dunstHorizont);
@@ -1112,12 +1158,12 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             leuchtturm(c, t);
             boot(c, t);
             strandUndDuene(c, t);
-            figur(c, t);
+            if (szeneFigur) figur(c, t);
             grasVorne(c);
         } else {
             double temp = daten != null && daten.temp != null ? daten.temp : 10;
-            landschaften.vorFigur(c, ort, lage, licht, t, mondDa, sx, mx, sonneAlt, mond, temp, monat, ringe, glanz);
-            figur(c, t);
+            landschaften.vorFigur(c, ort, lage, licht, t, mondDa, sx, mx, sonneAlt, mond, temp, monat, ringe, glanz, szeneTiere);
+            if (szeneFigur) figur(c, t);
             landschaften.nachFigur(c, ort);
         }
         if (!schoner) {
@@ -1137,9 +1183,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         c.restore();
 
-        boolean wolkenFertig = lage.cover <= 0 || (E.wolken.length > 0 && E.wolkenKey.startsWith(wolkenGrund()) && wolkenAlpha(anim) >= 1);
+        Ebenen.WolkenSlot ws = E.slot(wolkenYh);
+        boolean wolkenFertig = lage.cover <= 0 || (ws.wolken.length > 0 && ws.wolkenKey.startsWith(wolkenGrund()) && wolkenAlpha(anim, ws) >= 1);
         boolean mondFertig = !mondDa || E.mond != null;
-        boolean figurFertig = figurKey.isEmpty() || figurKey.equals(E.figurKey);
+        boolean figurFertig = !szeneFigur || figurKey.isEmpty() || figurKey.equals(E.figurKey);
         if (!fertigGemeldet && daten != null && wolkenFertig && mondFertig && figurFertig) {
             fertigGemeldet = true;
             aufbauMs = anim - erstellt;
@@ -1205,19 +1252,104 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         int tagNr = (int) Math.floor((simZeit + Calendar.getInstance().getTimeZone().getOffset(simZeit)) / 864e5);
         tagNrAktuell = tagNr;
-        ort = Landschaften.ortFuer(ortWahl, tagNr);
+        ort = Landschaften.ortFuer(ortWahl, szeneOrte, tagNr);
         Calendar mc = Calendar.getInstance();
         mc.setTimeInMillis(simZeit);
         monat = mc.get(Calendar.MONTH);
-        grund = lage.cond + "/" + tagNr + "/" + mondDa + "/" + skala + "/" + Math.round(wolkenYh) + "/";
+        grund = lage.cond + "/" + tagNr + "/" + mondDa + "/" + skKey(skala) + "/" + Math.round(wolkenYh) + "/";
         // figure of the day: person, clothes and pose follow day, weather, temperature and night (like the page)
         boolean nacht = licht.tag < .5f, sonneJetzt = lage.sonneMoeglich && !nacht, mondhell = mondDa && nacht;
         double T = d != null && d.temp != null ? Math.round(d.temp) : 10;
-        String ck = tagNr + "/" + lage.cond + "/" + T + "/" + nacht + "/" + sonneJetzt + "/" + mondhell + "/" + lage.stark + "/" + monat;
+        String ck = tagNr + "/" + lage.cond + "/" + T + "/" + nacht + "/" + sonneJetzt + "/" + mondhell + "/" + lage.stark + "/" + monat + "/" + szeneTiere;
         if (!ck.equals(figurCfgKey)) {
             figurCfgKey = ck;
             figurCfg = Figur.fuerSzene(tagNr, monat, lage.cond, T, nacht, sonneJetzt, mondhell, lage.stark);
+            if (!szeneTiere && figurCfg != null) figurCfg.dog = null;
         }
+    }
+
+    private static int skKey(float sk) { return Math.max(1, Math.round(sk * 20f)); }
+
+    private static float standardSkala() {
+        if (letzteSeiteSkala > 0) return letzteSeiteSkala;
+        try {
+            android.util.DisplayMetrics dm = android.content.res.Resources.getSystem().getDisplayMetrics();
+            if (dm != null && dm.widthPixels > 0 && dm.heightPixels > 0) {
+                return Math.min(dm.widthPixels / W, dm.heightPixels / H);
+            }
+        } catch (RuntimeException ignored) {}
+        return 1f;
+    }
+
+    /** Pre-builds page clouds, figure and moon bitmaps on the background thread so opening "wetter" is 0 ms on frame 1. */
+    static void vorwaermen(WetterLage.Daten d, String ortWahl) {
+        vorwaermen(d, ortWahl, true, true);
+    }
+
+    static void vorwaermen(final WetterLage.Daten d, final String ortWahl, final boolean figurAn, final boolean tiereAn) {
+        if (d == null) return;
+        beendet = false;
+        haupt().post(() -> {
+            if (beendet) return;
+            long simZeit = System.currentTimeMillis();
+            double sonneAlt = 30;
+            boolean steigt = Calendar.getInstance().get(Calendar.HOUR_OF_DAY) < 12;
+            Himmel.Mond mond = null;
+            if (d.lat != null && d.lon != null) {
+                double[] s = Himmel.sonne(simZeit, d.lat, d.lon);
+                sonneAlt = s[0];
+                if (d.sonneHoehe != null && d.empfangen > 0) {
+                    double[] h = Himmel.sonne(d.empfangen, d.lat, d.lon);
+                    sonneAlt += Math.max(-2, Math.min(2, d.sonneHoehe - h[0]));
+                }
+                steigt = Himmel.sonne(simZeit + 600_000L, d.lat, d.lon)[0] > s[0];
+                mond = Himmel.mond(simZeit, d.lat, d.lon);
+            } else if (d.sonneHoehe != null) {
+                sonneAlt = d.sonneHoehe;
+                if (d.steigt != null) steigt = d.steigt;
+            }
+            WetterLage lg = new WetterLage(d.zustand);
+            WetterLage.Licht L = lg.licht(sonneAlt, steigt);
+            boolean mondDa = mond != null && mond.sichtbar && lg.mondMoeglich;
+            if (mondDa) {
+                float mx = Himmel.x(mond.az);
+                if (mx < -80 || mx > W + 80) mondDa = false;
+            }
+            float sk = standardSkala();
+            int skK = skKey(sk);
+            int tagNr = (int) Math.floor((simZeit + Calendar.getInstance().getTimeZone().getOffset(simZeit)) / 864e5);
+            Calendar mc = Calendar.getInstance();
+            mc.setTimeInMillis(simZeit);
+            int monat = mc.get(Calendar.MONTH);
+            long anim = SystemClock.uptimeMillis();
+            if (lg.cover > 0) {
+                Ebenen.WolkenSlot ws = E.seiteWolken;
+                int stufe = Math.round(L.tag * FARBSTUFEN);
+                String wk = lg.cond + "/" + tagNr + "/" + mondDa + "/" + skK + "/" + Math.round(Wolken.YH) + "/" + stufe;
+                if (!wk.equals(ws.wolkenKey) && !wk.equals(ws.bautKey) && ws.bautKey == null && anim >= ws.wolkenFehlerBis) {
+                    wolkenBauen(ws, lg, mondDa, sk, Wolken.YH, UNTEN, wk, stufe);
+                }
+            }
+            if (figurAn) {
+                boolean nacht = L.tag < .5f, sonneJetzt = lg.sonneMoeglich && !nacht, mondhell = mondDa && nacht;
+                double T = d.temp != null ? Math.round(d.temp) : 10;
+                Figur.Cfg fcfg = Figur.fuerSzene(tagNr, monat, lg.cond, T, nacht, sonneJetzt, mondhell, lg.stark);
+                if (!tiereAn && fcfg != null) fcfg.dog = null;
+                if (fcfg != null) {
+                    WetterLage.Licht fl = figurLicht(L);
+                    String fk = fcfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skK;
+                    if (!fk.equals(E.figurKey) && E.figurBaut == null && anim >= E.figurFehlerBis) {
+                        figurBauen(fk, fcfg, fl, sk);
+                    }
+                }
+            }
+            if (mondDa) {
+                String mk = Math.round(mond.f * 50) + "/" + Math.round(mond.limb / 3f) + "/" + Math.round(mond.face / 3f) + "/" + skK;
+                if (!mk.equals(E.mondKey) && !E.mondBaut) {
+                    mondBauenAsync(mond, sk, mk);
+                }
+            }
+        });
     }
 
     // ---- light-dependent colours and the shared layers -----------------------------------------------------------------
@@ -1227,20 +1359,23 @@ final class WetterView extends View implements Choreographer.FrameCallback {
     private void ebenen(long anim) {
         WetterLage.Licht L = licht;
         // clouds first: a new colour step or a new set of rows needs new row filters below: geometry per weather and day, one colour version for the light of now (16 steps night .. day)
+        Ebenen.WolkenSlot ws = E.slot(wolkenYh);
         if (lage.cover > 0) {
             int stufe = Math.round(L.tag * FARBSTUFEN);
             String wk = wolkenGrund() + stufe;
-            if (!wk.equals(E.wolkenKey) && !wk.equals(E.bautKey) && E.bautKey == null && anim >= E.wolkenFehlerBis) wolkenBauen(wk, stufe);
-            if (stufe != tagStufe || version != E.version) {
+            if (!wk.equals(ws.wolkenKey) && !wk.equals(ws.bautKey) && ws.bautKey == null && anim >= ws.wolkenFehlerBis) {
+                wolkenBauen(ws, lage, mondDa, skala, wolkenYh, schoner ? viewH : UNTEN, wk, stufe);
+            }
+            if (stufe != tagStufe || version != ws.version) {
                 tagStufe = stufe;
-                version = E.version;
+                version = ws.version;
                 himmelKey = "";   // new row filters
             }
         }
         // figure: one bitmap per layer, in the light of the hour in steps (8 between night and day, overlays in quarters)
-        if (figurCfg != null) {
+        if (szeneFigur && figurCfg != null) {
             WetterLage.Licht fl = figurLicht(L);
-            figurKey = figurCfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skala;
+            figurKey = figurCfg.schluessel() + fl.tag + "/" + fl.warm + "/" + fl.kuehl + "/" + fl.blau + "/" + skKey(skala);
             if (!figurKey.equals(E.figurKey) && E.figurBaut == null && anim >= E.figurFehlerBis) figurBauen(figurKey, figurCfg, fl, skala);
         }
         String hk = Math.round(Math.max(-15, Math.min(15, sonneAlt)) * 20) + (steigt ? "s" : "f") + lage.cond + mondDa + ort + (schoner ? "S" + Math.round(viewH) : "");
@@ -1250,33 +1385,37 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         // moon: phase and turn change slowly
         if (mondDa) {
-            String mk = Math.round(mond.f * 50) + "/" + Math.round(mond.limb / 3f) + "/" + Math.round(mond.face / 3f) + "/" + skala;
+            String mk = Math.round(mond.f * 50) + "/" + Math.round(mond.limb / 3f) + "/" + Math.round(mond.face / 3f) + "/" + skKey(skala);
             if (!mk.equals(E.mondKey)) {
                 if (E.mond == null) {   // small: at once, so the first frame has it
                     E.mond = mondBauen(mond, skala);
+                    E.mondSkala = skala;
                     E.mondKey = mk;
                 } else if (!E.mondBaut) {
-                    E.mondBaut = true;
-                    final Himmel.Mond mo = mond;
-                    final float sk = skala;
-                    try {
-                        bauer().execute(() -> {
-                            Bitmap b = null;
-                            try { b = mondBauen(mo, sk); } catch (RuntimeException ignored) {}
-                            final Bitmap fb = b;
-                            haupt().post(() -> {
-                                E.mondBaut = false;
-                                if (fb == null) return;
-                                if (E.mond != null) spaeterRecyceln(new Bitmap[] {E.mond});
-                                E.mond = fb;
-                                E.mondKey = mk;
-                            });
-                        });
-                    } catch (RuntimeException ended) {
-                        E.mondBaut = false;
-                    }
+                    mondBauenAsync(mond, skala, mk);
                 }
             }
+        }
+    }
+
+    private static void mondBauenAsync(final Himmel.Mond mo, final float sk, final String mk) {
+        E.mondBaut = true;
+        try {
+            bauer().execute(() -> {
+                Bitmap b = null;
+                try { b = mondBauen(mo, sk); } catch (RuntimeException ignored) {}
+                final Bitmap fb = b;
+                haupt().post(() -> {
+                    E.mondBaut = false;
+                    if (fb == null) return;
+                    if (E.mond != null) spaeterRecyceln(new Bitmap[] {E.mond});
+                    E.mond = fb;
+                    E.mondSkala = sk;
+                    E.mondKey = mk;
+                });
+            });
+        } catch (RuntimeException ended) {
+            E.mondBaut = false;
         }
     }
 
@@ -1291,7 +1430,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         return q;
     }
 
-    private void figurBauen(String key, Figur.Cfg cfg, WetterLage.Licht fl, float sk) {
+    private static void figurBauen(final String key, final Figur.Cfg cfg, final WetterLage.Licht fl, final float sk) {
         E.figurBaut = key;
         try {
             bauer().execute(() -> {
@@ -1314,6 +1453,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                     E.figur = (Bitmap[]) fr[0];
                     E.figurLage = (float[][]) fr[1];
                     E.figurDreh = (float[]) fr[2];
+                    E.figurSkala = sk;
                     E.figurKey = key;
                 });
             });
@@ -1359,13 +1499,11 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         return new Object[] {bm, lage, new float[] {mass.kopfDreh[0], mass.kopfDreh[1], mass.schwanzDreh[0], mass.schwanzDreh[1]}};
     }
 
-    private void wolkenBauen(String key, int stufe) {
-        final WetterLage lg = lage;
-        final boolean md = mondDa;
-        final float sk = skala, tag = stufe / (float) FARBSTUFEN;
-        final float wyh = wolkenYh, wMaxY = schoner ? viewH : UNTEN;
+    private static void wolkenBauen(final Ebenen.WolkenSlot ws, final WetterLage lg, final boolean md,
+                                    final float sk, final float wyh, final float wMaxY, final String key, final int stufe) {
+        final float tag = stufe / (float) FARBSTUFEN;
         final int tagNr = Integer.parseInt(key.split("/")[1]);
-        E.bautKey = key;
+        ws.bautKey = key;
         try {
             bauer().execute(() -> {
                 List<Wolken.Reihe> rh = null;
@@ -1379,38 +1517,38 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 final List<Wolken.Reihe> frh = rh;
                 final Object[] fb = b;
                 haupt().post(() -> {
-                    if (!key.equals(E.bautKey)) return;
-                    E.bautKey = null;
+                    if (!key.equals(ws.bautKey)) return;
+                    ws.bautKey = null;
                     if (fb == null) {
-                        E.wolkenFehlerBis = SystemClock.uptimeMillis() + 5_000L;
+                        ws.wolkenFehlerBis = SystemClock.uptimeMillis() + 5_000L;
                         return;
                     }
-                    E.wolkenFehlerBis = 0;
-                    if (E.wolken.length > 0) {   // the old set fades out over the new one
-                        spaeterRecyceln(E.vorher);
-                        E.vorher = E.wolken;
-                        E.vorherShader = E.wolkenShader;
-                        E.vorherY0 = E.wolkenY0;
-                        E.vorherY1 = E.wolkenY1;
-                        E.vorherReihen = E.reihen;
+                    ws.wolkenFehlerBis = 0;
+                    if (ws.wolken.length > 0) {   // the old set fades out over the new one
+                        spaeterRecyceln(ws.vorher);
+                        ws.vorher = ws.wolken;
+                        ws.vorherShader = ws.wolkenShader;
+                        ws.vorherY0 = ws.wolkenY0;
+                        ws.vorherY1 = ws.wolkenY1;
+                        ws.vorherReihen = ws.reihen;
                     }
-                    E.reihen = frh;
+                    ws.reihen = frh;
                     Bitmap[] neu = (Bitmap[]) fb[0];
                     BitmapShader[] sh = new BitmapShader[neu.length];
                     for (int i = 0; i < neu.length; i++) {
                         if (neu[i] != null) sh[i] = new BitmapShader(neu[i], Shader.TileMode.REPEAT, Shader.TileMode.CLAMP);
                     }
-                    E.wolken = neu;
-                    E.wolkenShader = sh;
-                    E.wolkenY0 = (float[]) fb[1];
-                    E.wolkenY1 = (float[]) fb[2];
-                    E.wolkenKey = key;
-                    E.wechselSeit = SystemClock.uptimeMillis();
-                    E.version++;
+                    ws.wolken = neu;
+                    ws.wolkenShader = sh;
+                    ws.wolkenY0 = (float[]) fb[1];
+                    ws.wolkenY1 = (float[]) fb[2];
+                    ws.wolkenKey = key;
+                    ws.wechselSeit = SystemClock.uptimeMillis();
+                    ws.version++;
                 });
             });
         } catch (RuntimeException ended) {
-            E.bautKey = null;
+            ws.bautKey = null;
         }
     }
 
@@ -1469,7 +1607,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         int hazeCol = WetterLage.tont(L.himmel[2], hz, L);
         dunstHorizont = new LinearGradient(0, hz - 26, 0, hz + 2, WetterLage.alpha(hazeCol, 0), WetterLage.alpha(hazeCol, .24f), Shader.TileMode.CLAMP);
         // cloud rows take the light of the hour through a colour filter (the bitmaps stay)
-        List<Wolken.Reihe> rh = E.reihen;
+        List<Wolken.Reihe> rh = E.slot(wolkenYh).reihen;
         wolkenFilter = new LightingColorFilter[rh.size()];
         float stufeTag = Math.round(L.tag * FARBSTUFEN) / (float) FARBSTUFEN;
         for (int i = 0; i < rh.size(); i++) {
@@ -1612,6 +1750,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             p.setColor(WetterLage.alpha(0xFFFFFFFF, s[3] * tw * a));
             c.drawCircle(xy[0], xy[1], s[2], p);
         }
+        if (!szeneSterne) return;
         // constellations: faint lines, coloured dots, names
         linie.setStrokeWidth(.9f);
         linie.setColor(WetterLage.alpha(0xFFBECDFF, .2f * a));
@@ -1644,7 +1783,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                     nv++;
                 }
             }
-            if (namen && sb.s.length > 1 && nv >= Math.min(3, sb.s.length)) c.drawText(sb.name, sum / nv, maxY + 15, text);
+            if (namen && szeneNamen && sb.s.length > 1 && nv >= Math.min(3, sb.s.length)) c.drawText(sb.name, sum / nv, maxY + 15, text);
         }
     }
 
@@ -1661,14 +1800,14 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         bild.setAlpha(Math.round(255 * a));
         c.save();
         c.translate(mx - 80, my - 80);
-        c.scale(1 / skala, 1 / skala);
+        c.scale(1 / E.mondSkala, 1 / E.mondSkala);
         c.drawBitmap(E.mond, 0, 0, bild);
         c.restore();
         bild.setAlpha(255);
     }
 
-    private float wolkenAlpha(long anim) {
-        if (E.wolken.length == 0) return 0;
+    private float wolkenAlpha(long anim, Ebenen.WolkenSlot ws) {
+        if (ws.wolken.length == 0) return 0;
         if (wolkenSchonDa) return 1;
         if (wolkenSichtbarSeit < 0) wolkenSichtbarSeit = anim;
         return Math.min(1, (anim - wolkenSichtbarSeit) / 450f);
@@ -1689,18 +1828,19 @@ final class WetterView extends View implements Choreographer.FrameCallback {
         }
         p.setShader(null);
         p.setAlpha(255);
-        float ein = wolkenAlpha(anim);
+        Ebenen.WolkenSlot ws = E.slot(wolkenYh);
+        float ein = wolkenAlpha(anim, ws);
         if (ein <= 0) return;
-        float wechsel = Math.min(1, (anim - E.wechselSeit) / 1500f);
-        if (E.vorher != null && wechsel < 1) reihenZeichnen(c, anim, E.vorherReihen, E.vorher, E.vorherShader, E.vorherY0, E.vorherY1, ein);
-        else if (E.vorher != null) {
-            spaeterRecyceln(E.vorher);
-            E.vorher = null;
-            E.vorherShader = null;
-            E.vorherY0 = E.vorherY1 = null;
-            E.vorherReihen = null;
+        float wechsel = Math.min(1, (anim - ws.wechselSeit) / 1500f);
+        if (ws.vorher != null && wechsel < 1) reihenZeichnen(c, anim, ws.vorherReihen, ws.vorher, ws.vorherShader, ws.vorherY0, ws.vorherY1, ein);
+        else if (ws.vorher != null) {
+            spaeterRecyceln(ws.vorher);
+            ws.vorher = null;
+            ws.vorherShader = null;
+            ws.vorherY0 = ws.vorherY1 = null;
+            ws.vorherReihen = null;
         }
-        reihenZeichnen(c, anim, E.reihen, E.wolken, E.wolkenShader, E.wolkenY0, E.wolkenY1, E.vorher != null ? ein * wechsel : ein);
+        reihenZeichnen(c, anim, ws.reihen, ws.wolken, ws.wolkenShader, ws.wolkenY0, ws.wolkenY1, ws.vorher != null ? ein * wechsel : ein);
     }
 
     private void reihenZeichnen(Canvas c, long anim, List<Wolken.Reihe> rh, Bitmap[] bm, BitmapShader[] sh, float[] y0, float[] y1, float alpha) {
@@ -1920,7 +2060,7 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             if (figurSichtbarSeit < 0) figurSichtbarSeit = anim;
             alpha = Math.min(1, (anim - figurSichtbarSeit) / 450f);
         }
-        float k = 1 / (skala * FIGUR_S);
+        float k = 1 / (E.figurSkala * FIGUR_S);
         float[] dreh = E.figurDreh;
         // wf-head: 9 s alternate, -1.5 deg for the first 30 %, 2 deg from 70 %; wf-tail: 0.5 s alternate, -10 .. 14 deg
         float u = (t % 18) / 9;
@@ -2499,6 +2639,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
             setClickable(false);
         }
 
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            return false;
+        }
+
         @Override protected void onAttachedToWindow() {
             super.onAttachedToWindow();
             vAngehaengt = true;
@@ -2568,7 +2712,10 @@ final class WetterView extends View implements Choreographer.FrameCallback {
                 c.save();
                 c.translate(dx, dy);
                 c.scale(skala, skala);
+                c.save();
+                c.clipRect(0, 0, W, schoner ? viewH : UNTEN);
                 niederschlag(c, t);
+                c.restore();
                 if (schoner && schonerUi != null) {
                     long zt = "live".equals(modus) ? System.currentTimeMillis() : simZeit;
                     schonerUi.zeichnen(c, W, viewH, zt, t, licht.tag, daten, lage, schonerZustand, schonerOpt);
