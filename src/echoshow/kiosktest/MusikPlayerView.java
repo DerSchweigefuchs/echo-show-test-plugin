@@ -95,14 +95,30 @@ final class MusikPlayerView extends FrameLayout {
     private float lyricsScrollY, lyricsTargetY, lyricsMaxScroll;
     private int aktivLyrikIdx = -2;
 
-    private String offenPopover = "";   // "" | "dev" | "grp" | "versatz"
+    private String offenPopover = "";   // "" | "dev" | "grp"
     private float popoverScrollY, popoverMaxScroll;
+    private boolean versatzSichtbar;
 
     private boolean ziehendSeek;
     private double seekDragPos;
     private long letztesNachladenMs;
 
     private final Runnable nachladenRun = this::triggerNachladen;
+    private final Runnable versatzAusRun = this::versatzAusblenden;
+
+    private void versatzAusblenden() {
+        TestAnsicht.sicher(() -> {
+            if (versatzSichtbar) {
+                versatzSichtbar = false;
+                canvasView.invalidate();
+            }
+        });
+    }
+
+    private void versatzTimerNeustarten() {
+        mainHandler.removeCallbacks(versatzAusRun);
+        if (versatzSichtbar) mainHandler.postDelayed(versatzAusRun, 10_000L);
+    }
 
     private void triggerNachladen() {
         TestAnsicht.sicher(() -> {
@@ -165,6 +181,11 @@ final class MusikPlayerView extends FrameLayout {
         }
         if (pl == null || !pl.istLive()) {
             if (!lyricsAn) lyricsKey = "";
+            versatzSichtbar = false;
+            mainHandler.removeCallbacks(versatzAusRun);
+        } else if (!lyricsAn) {
+            versatzSichtbar = false;
+            mainHandler.removeCallbacks(versatzAusRun);
         }
         pruefeLiedtext(pl);
         canvasView.schleife();
@@ -194,6 +215,7 @@ final class MusikPlayerView extends FrameLayout {
     @Override protected void onDetachedFromWindow() {
         mainHandler.removeCallbacks(tick1s);
         mainHandler.removeCallbacks(nachladenRun);
+        mainHandler.removeCallbacks(versatzAusRun);
         super.onDetachedFromWindow();
     }
 
@@ -303,6 +325,7 @@ final class MusikPlayerView extends FrameLayout {
         data.put("value", MusikDaten.vorlaufJson(daten.vorlauf));
         callService("input_text", "set_value", "input_text.musik_liedtext_vorlauf_geraete", data);
         aktivLyrikIdx = -2;
+        versatzTimerNeustarten();
         canvasView.invalidate();
     }
 
@@ -338,17 +361,20 @@ final class MusikPlayerView extends FrameLayout {
         private final Shader scrimGrad = new LinearGradient(0, 0, 0, H, 0x26000000, 0x73000000, Shader.TileMode.CLAMP);
 
         private float skala = 1f, dx, dy, downX, downY, lastY;
-        private boolean ziehendScroll, laeuft, angehaengt, sichtbar = true;
+        private boolean ziehendScroll, laeuft, angehaengt, sichtbar = true, langAusgeloest;
         private Hit downHit;
         private final Runnable langCheck = new Runnable() {
             @Override public void run() {
                 if (downHit != null && "lyr".equals(downHit.id) && !ziehendScroll) {
+                    langAusgeloest = true;
                     if (!lyricsAn) {
                         lyricsAn = true;
                         callService("input_boolean", "turn_on", "input_boolean.musik_liedtext", null);
                         pruefeLiedtext(daten.aktuellerPlayer());
                     }
-                    offenPopover = "versatz".equals(offenPopover) ? "" : "versatz";
+                    versatzSichtbar = !versatzSichtbar;
+                    if (versatzSichtbar) offenPopover = "";
+                    versatzTimerNeustarten();
                     schleife();
                     invalidate();
                     downHit = null;
@@ -427,7 +453,6 @@ final class MusikPlayerView extends FrameLayout {
                 // 4. Popovers
                 if ("dev".equals(offenPopover)) zeichneGeraetePopover(c, pl);
                 else if ("grp".equals(offenPopover)) zeichneGruppenPopover(c, pl);
-                else if ("versatz".equals(offenPopover)) zeichneVersatzPopover(c, pl);
             } catch (RuntimeException ignored) {}
             c.restore();
         }
@@ -525,23 +550,43 @@ final class MusikPlayerView extends FrameLayout {
             drawIcon(c, "mdi:microphone-variant", lyrL + 13f, cy - 13f, 26f, lyricsAn ? 0xFF17151F : TXT);
             hits.add(new Hit("lyr", "", lyrL, cy - 26f, rx, cy + 26f));
 
-            // Text-Versatz chip when lyrics mode is active (left of lyrics button)
-            if (lyricsAn && pl != null && pl.istLive()) {
+            // Inline Text-Versatz control (only visible after long-pressing Lyrics, auto-hides after 10 s)
+            if (versatzSichtbar && lyricsAn && pl != null && pl.istLive()) {
                 double lead = daten.vorlaufFuer(pl);
                 String leadTxt = (lead > 0 ? "+" : "") + String.format(Locale.GERMAN, "%.2f", lead) + " s";
-                tPaint.setTypeface(tfMed);
-                tPaint.setTextSize(14f);
-                float vw = Math.max(96f, tPaint.measureText("Versatz " + leadTxt) + 28f);
-                rx = lyrL - 12f;
-                float vL = rx - vw;
-                p.setColor("versatz".equals(offenPopover) ? 0x47FFFFFF : 0x1FFFFFFF);
-                rf.set(vL, cy - 20f, rx, cy + 20f);
-                c.drawRoundRect(rf, 20f, 20f, p);
+                float ctrlR = lyrL - 14f;
+                // [ + ] button (44 px)
+                float plusL = ctrlR - 44f;
+                p.setColor(0x1FFFFFFF);
+                c.drawCircle(plusL + 22f, cy, 22f, p);
+                drawIcon(c, "mdi:plus", plusL + 11f, cy - 11f, 22f, TXT);
+                hits.add(new Hit("lead_p", "", plusL - 2f, cy - 24f, ctrlR + 2f, cy + 24f));
+
+                // Label + value (96 px)
+                float txtR = plusL - 4f;
+                float txtL = txtR - 96f;
+                float txtCx = (txtL + txtR) * 0.5f;
                 tPaint.setTextAlign(Paint.Align.CENTER);
+                tPaint.setTypeface(tfNorm);
+                tPaint.setTextSize(12f);
+                tPaint.setColor(0x99FFFFFF);
+                c.drawText("Text-Versatz", txtCx, cy - 4f, tPaint);
+                tPaint.setTypeface(tfBold);
+                tPaint.setTextSize(17f);
                 tPaint.setColor(TXT);
-                c.drawText("Versatz " + leadTxt, rf.centerX(), cy + 5f, tPaint);
+                c.drawText(leadTxt, txtCx, cy + 15f, tPaint);
                 tPaint.setTextAlign(Paint.Align.LEFT);
-                hits.add(new Hit("pop_versatz", "", vL, cy - 24f, rx, cy + 24f));
+                if (Math.abs(lead) > 0.01) {
+                    hits.add(new Hit("lead_0", "", txtL, cy - 24f, txtR, cy + 24f));
+                }
+
+                // [ - ] button (44 px)
+                float minusR = txtL - 4f;
+                float minusL = minusR - 44f;
+                p.setColor(0x1FFFFFFF);
+                c.drawCircle(minusL + 22f, cy, 22f, p);
+                drawIcon(c, "mdi:minus", minusL + 11f, cy - 11f, 22f, TXT);
+                hits.add(new Hit("lead_m", "", minusL - 2f, cy - 24f, minusR + 2f, cy + 24f));
             }
         }
 
@@ -957,49 +1002,6 @@ final class MusikPlayerView extends FrameLayout {
             }
         }
 
-        private void zeichneVersatzPopover(Canvas c, MusikDaten.Player pl) {
-            float pw = 240f, ph = 114f;
-            float px = Math.min(W - 30f - pw, 470f), py = 86f;
-            drawPopoverShell(c, px, py, pw, ph);
-
-            double lead = daten.vorlaufFuer(pl);
-            String s = (lead > 0 ? "+" : "") + String.format(Locale.GERMAN, "%.2f", lead) + " s";
-
-            tPaint.setTypeface(tfNorm);
-            tPaint.setTextSize(13f);
-            tPaint.setColor(0x99FFFFFF);
-            tPaint.setTextAlign(Paint.Align.CENTER);
-            c.drawText("Text-Versatz", px + pw * 0.5f, py + 26f, tPaint);
-
-            float cy = py + 62f;
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x1FFFFFFF);
-            c.drawCircle(px + 42f, cy, 22f, p);
-            drawIcon(c, "mdi:minus", px + 31f, cy - 11f, 22f, TXT);
-            hits.add(new Hit("lead_m", "", px + 16f, cy - 24f, px + 68f, cy + 24f));
-
-            tPaint.setTypeface(tfBold);
-            tPaint.setTextSize(20f);
-            tPaint.setColor(TXT);
-            c.drawText(s, px + pw * 0.5f, cy + 7f, tPaint);
-
-            p.setColor(0x1FFFFFFF);
-            c.drawCircle(px + pw - 42f, cy, 22f, p);
-            drawIcon(c, "mdi:plus", px + pw - 53f, cy - 11f, 22f, TXT);
-            hits.add(new Hit("lead_p", "", px + pw - 68f, cy - 24f, px + pw - 16f, cy + 24f));
-
-            if (Math.abs(lead) > 0.01) {
-                tPaint.setTypeface(tfNorm);
-                tPaint.setTextSize(12.5f);
-                tPaint.setColor(ACC);
-                c.drawText("Zurücksetzen", px + pw * 0.5f, py + ph - 12f, tPaint);
-                hits.add(new Hit("lead_0", "", px + 60f, py + ph - 28f, px + pw - 60f, py + ph));
-            }
-            tPaint.setTextAlign(Paint.Align.LEFT);
-            // Swallow background touches on popover card
-            hits.add(0, new Hit("pop_bg", "", px, py, px + pw, py + ph));
-        }
-
         /** Smooth hardware-accelerated soft drop shadow (API 24+ safe, zero hard edges). */
         private void drawSoftShadow(Canvas c, float x, float y, float w, float h, float rad, float dyOff, float blur, float totalAlpha) {
             final int steps = 12;
@@ -1065,6 +1067,7 @@ final class MusikPlayerView extends FrameLayout {
                     lastY = downY;
                     ziehendScroll = false;
                     ziehendSeek = false;
+                    langAusgeloest = false;
                     downHit = findeHit(vx, vy);
                     mainHandler.removeCallbacks(langCheck);
                     if (downHit != null && "seek".equals(downHit.id)) {
@@ -1103,7 +1106,7 @@ final class MusikPlayerView extends FrameLayout {
                         if (a == MotionEvent.ACTION_UP) {
                             seekTo(daten.aktuellerPlayer(), seekDragPos);
                         }
-                    } else if (a == MotionEvent.ACTION_UP && !ziehendScroll
+                    } else if (a == MotionEvent.ACTION_UP && !ziehendScroll && !langAusgeloest
                             && Math.hypot(e.getX() - downX, e.getY() - downY) < 28f * skala) {
                         Hit h = findeHit(vx, vy);
                         if (h != null) {
@@ -1114,6 +1117,7 @@ final class MusikPlayerView extends FrameLayout {
                             invalidate();
                         }
                     }
+                    langAusgeloest = false;
                     downHit = null;
                 }
             } catch (RuntimeException ignored) {}
@@ -1144,8 +1148,7 @@ final class MusikPlayerView extends FrameLayout {
         private void ausfuehren(Hit h) {
             MusikDaten.Player pl = daten.aktuellerPlayer();
             if (!offenPopover.isEmpty() && !"pop_dev".equals(h.id) && !"pop_grp".equals(h.id)
-                    && !"pop_versatz".equals(h.id) && !"pick_dev".equals(h.id) && !"pick_grp".equals(h.id)
-                    && !h.id.startsWith("lead_") && !"pop_bg".equals(h.id)) {
+                    && !"pick_dev".equals(h.id) && !"pick_grp".equals(h.id)) {
                 offenPopover = "";
             }
             switch (h.id) {
@@ -1162,15 +1165,15 @@ final class MusikPlayerView extends FrameLayout {
                     popoverScrollY = 0f;
                     invalidate();
                     break;
-                case "pop_versatz":
-                    offenPopover = "versatz".equals(offenPopover) ? "" : "versatz";
-                    invalidate();
-                    break;
                 case "lyr":
                     lyricsAn = !lyricsAn;
                     callService("input_boolean", "toggle", "input_boolean.musik_liedtext", null);
-                    if (lyricsAn) pruefeLiedtext(pl);
-                    else if ("versatz".equals(offenPopover)) offenPopover = "";
+                    if (lyricsAn) {
+                        pruefeLiedtext(pl);
+                    } else {
+                        versatzSichtbar = false;
+                        mainHandler.removeCallbacks(versatzAusRun);
+                    }
                     schleife();
                     invalidate();
                     break;
