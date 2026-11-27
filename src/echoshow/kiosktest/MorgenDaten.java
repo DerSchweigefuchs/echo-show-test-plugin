@@ -24,6 +24,7 @@ final class MorgenDaten {
     static final class Gruppe {
         String art = "", label = "", thema = "";
         int count = 1;
+        double dauer;
     }
 
     static final class TerminDetail {
@@ -40,7 +41,7 @@ final class MorgenDaten {
         String id = "", art = "", text = "", titel = "";
         String label = "", kategorie = "", thema = "", naechstes = "";
         int gruppe, gruppeI, gruppeN = 1;
-        double t0, dauer, jetzt;
+        double t0, dauer, jetzt, gruppeOffset;
     }
 
     static final class MorgenInfo {
@@ -72,6 +73,7 @@ final class MorgenDaten {
         boolean karaoke = true;
         String ansicht = "vollbild";   // "vollbild" | "leiste" | "aus"
         String sprecherName = "";
+        double gesamtDauer;
         long clockOffsetMs;       // serverTimeMs - localTimeMs
         MorgenInfo morgen;
         Segment seg;
@@ -165,6 +167,7 @@ final class MorgenDaten {
         String ans = str(m.get("ansicht"));
         s.ansicht = ans.isEmpty() ? "vollbild" : ans;
         s.sprecherName = str(m.get("name"));
+        s.gesamtDauer = numDbl(m.get("gesamt_dauer"), 0);
         double jetzt = numDbl(m.get("jetzt"), 0);
         if (jetzt > 1e9) s.clockOffsetMs = Math.round(jetzt * 1000.0) - nowMs;
 
@@ -187,6 +190,7 @@ final class MorgenDaten {
                 g.label = str(gm.get("label"));
                 g.thema = str(gm.get("thema"));
                 g.count = Math.max(1, numInt(gm.get("count"), 1));
+                g.dauer = numDbl(gm.get("dauer"), 0);
                 gs.add(g);
             }
             s.gruppen = gs;
@@ -275,6 +279,7 @@ final class MorgenDaten {
             seg.gruppeN = Math.max(1, numInt(sm.get("gruppe_n"), 1));
             seg.t0 = numDbl(sm.get("t0"), 0);
             seg.dauer = numDbl(sm.get("dauer"), 0);
+            seg.gruppeOffset = numDbl(sm.get("gruppe_offset"), 0);
             seg.jetzt = numDbl(sm.get("jetzt"), 0);
             if (seg.jetzt > 1e9) s.clockOffsetMs = Math.round(seg.jetzt * 1000.0) - nowMs;
             s.seg = seg;
@@ -503,12 +508,17 @@ final class MorgenDaten {
             {"kalender", "Kalender", ""}, {"wetter", "Wetter", ""}, {"abschied", "Abschied", ""}
         };
         List<Gruppe> gs = new ArrayList<>();
-        for (String[] g : grp) {
+        double[] durs = {8, 34, 18, 18, 16, 14, 15, 7};
+        for (int gi = 0; gi < grp.length; gi++) {
+            String[] g = grp[gi];
             Gruppe gr = new Gruppe();
-            gr.art = g[0]; gr.label = g[1]; gr.thema = g[2]; gr.count = "ort".equals(g[2]) ? 2 : 1;
+            gr.art = g[0]; gr.label = g[1]; gr.thema = g[2];
+            gr.count = "ort".equals(g[2]) ? 2 : 1;
+            gr.dauer = durs[gi];
             gs.add(gr);
         }
         s.gruppen = gs;
+        s.gesamtDauer = 130.0;
         s.n = 9;
 
         MorgenInfo mi = new MorgenInfo();

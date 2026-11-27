@@ -3,9 +3,13 @@ package echoshow.kiosktest;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -189,7 +193,8 @@ final class MorgenView extends FrameLayout {
         private final Shader scrimOben = new LinearGradient(0, 0, 0, 100, 0xAA0A111A, 0x000A111A, Shader.TileMode.CLAMP);
         private final Shader scrimUnten = new LinearGradient(0, 310, 0, H, 0x000A111A, 0xEC0A111A, Shader.TileMode.CLAMP);
         private final Shader scrimDim = new LinearGradient(0, 0, 0, H, 0xD40B121C, 0xF20B121C, Shader.TileMode.CLAMP);
-        private final Shader scrimNews = new LinearGradient(0, 0, 0, H, 0xC40C131D, 0xF40A1018, Shader.TileMode.CLAMP);
+        private final Shader scrimNews = new LinearGradient(0, 0, 0, H, 0x470E1118, 0x940C0F15, Shader.TileMode.CLAMP);
+        private final Shader fotoCapGrad = new LinearGradient(0, 0, 0, 76, 0x00080A10, 0xDB080A10, Shader.TileMode.CLAMP);
         private final Shader bgNews = new LinearGradient(0, 0, W * .7f, H, 0xFF1A283A, 0xFF0C131C, Shader.TileMode.CLAMP);
         private final Shader bgEil = new LinearGradient(0, 0, W * .7f, H, 0xFF4A1418, 0xFF1A0D10, Shader.TileMode.CLAMP);
         private final Shader regenShader = new LinearGradient(0, 0, 0, 36, 0xB85AAAF5, 0x245AAAF5, Shader.TileMode.CLAMP);
@@ -198,6 +203,8 @@ final class MorgenView extends FrameLayout {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint linie = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint bildP = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint bgBildP = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint maskP = new Paint();
         private final Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint karP = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint karActP = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -211,6 +218,7 @@ final class MorgenView extends FrameLayout {
         private final WortLayout karLayout = new WortLayout();
         private Shader kurveShader;
         private String kurveKey = "";
+        private float maskY, maskH;
 
         private float skala = 1f, dx, dy, downX, downY;
         private boolean laeuft, angehaengt, sichtbar = true;
@@ -230,6 +238,14 @@ final class MorgenView extends FrameLayout {
             linie.setStrokeCap(Paint.Cap.ROUND);
             linie.setStrokeJoin(Paint.Join.ROUND);
             karActP.setShadowLayer(12f, 0f, 0f, 0x8CFFFFFF);
+
+            ColorMatrix cm = new ColorMatrix();
+            cm.setSaturation(1.3f);
+            ColorMatrix br = new ColorMatrix();
+            br.setScale(0.46f, 0.46f, 0.46f, 1f);
+            cm.postConcat(br);
+            bgBildP.setColorFilter(new ColorMatrixColorFilter(cm));
+            maskP.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
         }
 
         void setWetter(WetterLage.Daten wd) {
@@ -371,11 +387,10 @@ final class MorgenView extends FrameLayout {
             zeichneSegmentLeiste(c, dummy, 0f);
 
             String firstLbl = !status.gruppen.isEmpty() ? status.gruppen.get(0).label : "Mein Tag";
-            int grpN = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
-            zeichneKopfZeile(c, 0xFF6FB3F2, firstLbl, "Startet gleich …", "Segment 1 von " + grpN);
+            zeichneKopfZeile(c, 0xFF6FB3F2, firstLbl, "Startet gleich …");
 
             // Calm centered animated wave + label
-            float cx = W * .5f, cy = H * .47f;
+            float cx = W * .5f, cy = H * .48f;
             p.setStyle(Paint.Style.FILL);
             p.setColor(0xFF7AB8F5);
             for (int k = 0; k < 7; k++) {
@@ -393,12 +408,6 @@ final class MorgenView extends FrameLayout {
                 c.drawText(status.modusLabel, cx, cy + 80, txt);
             }
             txt.setTextAlign(Paint.Align.LEFT);
-
-            // Bottom stop pill only
-            float y = 502;
-            p.setStyle(Paint.Style.FILL); p.setColor(0x18FFFFFF);
-            c.drawRect(28, y - 14, W - 28, y - 13, p);
-            zeichneSteuerKnopf(c, "stopp", 935, y + 2, "Stopp", 0x2EE85C52, 0x6EF28078, 0xFFF5B5B0);
         }
 
         // ==== UNIFIED STORY PLAYER ==================================================================================
@@ -413,15 +422,11 @@ final class MorgenView extends FrameLayout {
             // 1. Backdrop per segment type
             if (isNews) {
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(0xFF0A1018);
+                p.setColor(0xFF13161B);
                 c.drawRect(0, 0, W, H, p);
                 Bitmap blur = it != null ? weichBilder.get(it.bild) : null;
                 if (blur != null && !blur.isRecycled()) {
-                    bildP.setAlpha(155);
-                    srcR.set(0, 0, blur.getWidth(), blur.getHeight());
-                    rf.set(-20, -20, W + 20, H + 20);
-                    c.drawBitmap(blur, srcR, rf, bildP);
-                    bildP.setAlpha(255);
+                    drawBitmapCenterCrop(c, blur, -60f, -60f, W + 120f, H + 120f, 255, bgBildP);
                 } else {
                     p.setColor(0xFFFFFFFF);
                     p.setShader("eil".equals(status.art) ? bgEil : bgNews);
@@ -458,7 +463,6 @@ final class MorgenView extends FrameLayout {
             String uhrKurz = String.format(Locale.ROOT, "%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE));
             int grpN = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
             int grpIdx = Math.max(0, Math.min(grpN - 1, seg.gruppe));
-            String segZaehler = "Segment " + (grpIdx + 1) + " von " + grpN;
 
             int dotCol = 0xFF6FB3F2;
             String pillTitel = !seg.kategorie.isEmpty() ? seg.kategorie : (!seg.label.isEmpty() ? seg.label : "Mein Tag");
@@ -480,19 +484,24 @@ final class MorgenView extends FrameLayout {
                 dotCol = 0xFF6CC483; pillTitel = "Einkaufsliste";
                 int ln = mi != null ? mi.liste : 0;
                 pillSub = ln == 1 ? "1 Eintrag" : ln + " Einträge";
-            } else if (isNews && it != null) {
-                dotCol = status.quelleFarbe(it.q);
-                String qn = status.quelleName(it.q);
-                String vor = MorgenDaten.vorText(it.z, nowMs);
-                pillTitel = !seg.kategorie.isEmpty() ? seg.kategorie : qn;
+            } else if (isNews) {
+                dotCol = it != null ? status.quelleFarbe(it.q) : 0xFF6FB3F2;
                 StringBuilder sb = new StringBuilder();
-                if (!qn.isEmpty() && !qn.equalsIgnoreCase(pillTitel)) sb.append(qn);
-                if (!vor.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append(vor); }
-                if (seg.gruppeN > 1) { if (sb.length() > 0) sb.append(" · "); sb.append(seg.gruppeI + 1).append(" von ").append(seg.gruppeN); }
-                if ("mehr".equals(art)) { if (sb.length() > 0) sb.append(" · "); sb.append("mehr dazu"); }
+                if (seg.gruppeN > 1) {
+                    sb.append(seg.gruppeI + 1).append(" von ").append(seg.gruppeN);
+                } else {
+                    int mIdx = status.aktuelleMeldungIndex();
+                    if (mIdx >= 0 && status.items.size() > 1) {
+                        sb.append(mIdx + 1).append(" von ").append(status.items.size());
+                    }
+                }
+                if ("mehr".equals(art)) {
+                    if (sb.length() > 0) sb.append(" · ");
+                    sb.append("mehr dazu");
+                }
                 pillSub = sb.toString();
             }
-            zeichneKopfZeile(c, dotCol, pillTitel, pillSub, segZaehler);
+            zeichneKopfZeile(c, dotCol, pillTitel, pillSub);
 
             // 4. Center Content tailored to segment type
             if ("wetter".equals(art) || "intro".equals(art)) {
@@ -508,13 +517,6 @@ final class MorgenView extends FrameLayout {
             } else {
                 zeichneNachrichtInhalt(c, seg, it, prog, nowMs);
             }
-
-            // 5. Unified Bottom Transport Control Bar
-            String modeLbl = !status.modusLabel.isEmpty() ? status.modusLabel
-                : (status.sprecherName.isEmpty() ? "Wird vorgelesen" : status.sprecherName + " liest vor");
-            String nextLbl = !seg.naechstes.isEmpty() ? ("Als Nächstes: " + seg.naechstes) : "Letztes Segment";
-            boolean mitMehr = isNews && !"mehr".equals(art) && it != null && !it.x.isEmpty();
-            zeichneFussLeiste(c, modeLbl, nextLbl, mitMehr, animS);
         }
 
         // ---- Segment 1/7: Wetter Content ---------------------------------------------------------------------------
@@ -572,7 +574,7 @@ final class MorgenView extends FrameLayout {
             }
             zeichneStundenGraphKompakt(c, 468, 136, 438, 162);
 
-            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+            zeichneKaraokeBox(c, 36, 344, 891, 212, seg.text, prog, 21f);
         }
 
         // ---- Begrüßung / Abschied Content --------------------------------------------------------------------------
@@ -598,7 +600,7 @@ final class MorgenView extends FrameLayout {
             if (wetter != null && wetter.temp != null) {
                 zeichneHinweisPill(c, 38, 248, Math.round(wetter.temp) + "° · " + lage.name(), 0x24FFFFFF, 0x42FFFFFF, 0xFFECEBE8, false);
             }
-            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20.5f);
+            zeichneKaraokeBox(c, 36, 344, 891, 212, seg.text, prog, 21.5f);
         }
 
         // ---- Kalender Content --------------------------------------------------------------------------------------
@@ -622,7 +624,7 @@ final class MorgenView extends FrameLayout {
                     zeichneAgendaZeile(c, rx, ry, 412, td);
                 }
             }
-            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+            zeichneKaraokeBox(c, 36, 344, 891, 212, seg.text, prog, 21f);
         }
 
         private void zeichneAgendaZeile(Canvas c, float x, float y, float w, MorgenDaten.TerminDetail td) {
@@ -665,7 +667,7 @@ final class MorgenView extends FrameLayout {
             txt.setTypeface(tfNorm); txt.setTextSize(15.5f); txt.setColor(0xB8DCE6F0);
             c.drawText("Rechtzeitig an die Straße stellen", 154, 222, txt);
 
-            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+            zeichneKaraokeBox(c, 36, 344, 891, 212, seg.text, prog, 21f);
         }
 
         // ---- Einkaufsliste Content ---------------------------------------------------------------------------------
@@ -691,75 +693,80 @@ final class MorgenView extends FrameLayout {
                     c.drawText(kuerzen(txt, itms.get(i), 380), ix + 24, iy, txt);
                 }
             }
-            zeichneKaraokeBox(c, 36, 344, 891, 118, seg.text, prog, 20f);
+            zeichneKaraokeBox(c, 36, 344, 891, 212, seg.text, prog, 21f);
         }
 
-        // ---- News Segment Content (Headline + Spoken Summary Karaoke + Photo + Next Card) --------------------------
+        // ---- News Segment Content (Variante H: Großes 50/50 Split ohne Footer/Danach) -------------------------------
 
         private void zeichneNachrichtInhalt(Canvas c, MorgenDaten.Segment seg, MorgenDaten.Meldung it, float prog, long nowMs) {
-            MorgenDaten.Meldung nach = status.naechsteMeldung();
-            boolean hatRechts = it != null && (!it.bild.isEmpty() || nach != null);
-            float mainW = hatRechts ? 636 : (W - 76);
-
-            float textY = 122;
             String artTitel = (it != null && !it.t.isEmpty()) ? it.t : (seg.titel != null ? seg.titel : "");
-            if (!artTitel.isEmpty()) {
-                // Prominent article headline (up to 2 lines)
-                txt.setTextAlign(Paint.Align.LEFT);
-                txt.setTypeface(tfMed); txt.setTextSize(22.5f);
-                txt.setColor("eil".equals(status.art) ? 0xFFFF9A92 : 0xFFFFFFFF);
-                float endY = zeichneMehrzeilig(c, artTitel, txt, 38, 122, mainW, 28, 2);
+            boolean hatBild = it != null && !it.bild.isEmpty();
 
-                // Source-colored accent bar
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(it != null ? status.quelleFarbe(it.q) : 0xFF6FB3F2);
-                rf.set(38, endY + 12, 86, endY + 15f);
-                c.drawRoundRect(rf, 2, 2, p);
-                textY = endY + 34;
-            }
+            float rightX = hatBild ? 508f : 36f;
+            float rightW = hatBild ? (W - 28f - rightX) : (W - 72f);
 
-            // Large live-karaoke spoken text (auto-scrolling smoothly!)
-            float fs = seg.text.length() > 260 ? 22f : (seg.text.length() > 160 ? 24.5f : 26.5f);
-            karP.setTypeface(tfLight); karP.setTextSize(fs);
-            karActP.setTypeface(tfMed); karActP.setTextSize(fs);
-            karLayout.bauen(seg.text, karP, mainW, fs * 1.40f);
-            karScrollY = zeichneKaraoke(c, karLayout, seg.text, prog, status.karaoke, 38, textY, mainW, 468 - textY, karScrollY);
+            if (hatBild) {
+                float px = 28f, py = 96f, pw = 452f, ph = 460f, rad = 24f;
+                drawSoftShadow(c, px, py, pw, ph, rad, 14f, 26f, 0.48f);
 
-            // Right column: Sharp Article Photo + "DANACH" preview card
-            if (hatRechts) {
-                Bitmap foto = it != null ? scharfBilder.get(it.bild) : null;
+                rf.set(px, py, px + pw, py + ph);
+                clipPath.reset();
+                clipPath.addRoundRect(rf, rad, rad, Path.Direction.CW);
+                c.save();
+                c.clipPath(clipPath);
+
+                Bitmap foto = scharfBilder.get(it.bild);
                 if (foto != null && !foto.isRecycled()) {
-                    zeichneBildGerundet(c, foto, 702, 96, 225, 138, 16);
-                } else if (it != null && !it.bild.isEmpty()) {
-                    zeichneGlasKarte(c, 702, 96, 225, 138, 0x16FFFFFF, 0x24FFFFFF, 16);
-                    drawIcon(c, "mdi:newspaper-variant-outline", 798, 148, 34, 0x48FFFFFF);
+                    drawBitmapCenterCrop(c, foto, px, py, pw, ph, 255, bildP);
+                } else {
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(0xFF1A2332);
+                    c.drawRect(px, py, px + pw, py + ph, p);
+                    drawIcon(c, "mdi:newspaper-variant-outline", px + pw * 0.5f - 28f, py + ph * 0.44f - 28f, 56f, 0x48FFFFFF);
                 }
 
-                float nextTop = (it != null && !it.bild.isEmpty()) ? 252 : 96;
-                float nextH = 450 - nextTop;
-                if (nach != null || !seg.naechstes.isEmpty()) {
-                    zeichneGlasKarte(c, 702, nextTop, 225, nextH, 0x12FFFFFF, 0x20FFFFFF, 16);
-                    hits.add(new Hit("naechste", 702, nextTop, 927, nextTop + nextH));
+                // Bottom caption inside rounded photo
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0xFFFFFFFF);
+                p.setShader(fotoCapGrad);
+                c.save();
+                c.translate(0f, py + ph - 76f);
+                c.drawRect(px, 0f, px + pw, 76f, p);
+                c.restore();
+                p.setShader(null);
 
-                    txt.setTypeface(tfMed); txt.setTextSize(11.5f); txt.setColor(0x88FFFFFF);
-                    String dan = !seg.naechstes.isEmpty() ? ("DANACH · " + seg.naechstes.toUpperCase(Locale.ROOT)) : "ALS NÄCHSTES";
-                    c.drawText(kuerzen(txt, dan, 189), 720, nextTop + 28, txt);
-
-                    if (nach != null) {
-                        int qc = status.quelleFarbe(nach.q);
-                        p.setStyle(Paint.Style.FILL); p.setColor(qc);
-                        c.drawCircle(724, nextTop + 49, 4, p);
-                        txt.setTypeface(tfMed); txt.setTextSize(12.5f); txt.setColor(qc);
-                        c.drawText(status.quelleName(nach.q), 734, nextTop + 53, txt);
-
-                        txt.setTypeface(tfNorm); txt.setTextSize(14.5f); txt.setColor(0xFFECF0F5);
-                        zeichneMehrzeilig(c, nach.t, txt, 720, nextTop + 78, 189, 20, 4);
-                    } else {
-                        txt.setTypeface(tfLight); txt.setTextSize(18); txt.setColor(0xFFECF0F5);
-                        c.drawText(kuerzen(txt, seg.naechstes, 189), 720, nextTop + 68, txt);
-                    }
+                int qc = status.quelleFarbe(it.q);
+                String qName = status.quelleName(it.q);
+                String vor = MorgenDaten.vorText(it.z, nowMs);
+                float cy = py + ph - 22f;
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(qc);
+                c.drawCircle(px + 22f, cy - 4.5f, 4.5f, p);
+                txt.setTextAlign(Paint.Align.LEFT);
+                txt.setTypeface(tfMed); txt.setTextSize(14.5f); txt.setColor(0xFFFFFFFF);
+                c.drawText(qName, px + 35f, cy, txt);
+                if (!vor.isEmpty()) {
+                    float qw = txt.measureText(qName);
+                    txt.setTypeface(tfNorm); txt.setTextSize(14f); txt.setColor(0xCCFFFFFF);
+                    c.drawText("  ·  " + vor, px + 35f + qw, cy, txt);
                 }
+                c.restore();
             }
+
+            float textY = hatBild ? 124f : 128f;
+            if (!artTitel.isEmpty()) {
+                txt.setTextAlign(Paint.Align.LEFT);
+                txt.setTypeface(tfMed); txt.setTextSize(hatBild ? 27f : 28.5f);
+                txt.setColor("eil".equals(status.art) ? 0xFFFF9A92 : 0xFFFFFFFF);
+                float endY = zeichneMehrzeilig(c, artTitel, txt, rightX, textY, rightW, hatBild ? 33f : 35f, 3);
+                textY = endY + 24f;
+            }
+
+            float fs = hatBild ? 23.5f : 25f;
+            karP.setTypeface(tfNorm); karP.setTextSize(fs);
+            karActP.setTypeface(tfMed); karActP.setTextSize(fs);
+            karLayout.bauen(seg.text, karP, rightW, fs * 1.44f);
+            karScrollY = zeichneKaraoke(c, karLayout, seg.text, prog, status.karaoke, rightX, textY, rightW, 556f - textY, karScrollY);
         }
 
         // ---- Standby (when opened without active playback or minimized) --------------------------------------------
@@ -796,8 +803,13 @@ final class MorgenView extends FrameLayout {
             zeichneStundenGraphKompakt(c, 58, 254, 846, 178);
 
             if (status != null && status.aktiv && status.seg != null) {
-                zeichneFussLeiste(c, status.modusLabel.isEmpty() ? "Läuft" : status.modusLabel, "Antippen für Vollbild", false, animS);
-                hits.add(new Hit("gross", 28, 496, 460, 560));
+                txt.setTextAlign(Paint.Align.LEFT);
+                zeichneGlasKarte(c, 36, 496, 360, 48, 0xCC0D141C, 0x26FFFFFF, 24);
+                p.setStyle(Paint.Style.FILL); p.setColor(0xFF7AB8F5);
+                c.drawCircle(58, 520, 4.5f, p);
+                txt.setTypeface(tfMed); txt.setTextSize(14); txt.setColor(0xFFFFFFFF);
+                c.drawText(kuerzen(txt, status.modusLabel.isEmpty() ? "Wird vorgelesen · Antippen" : status.modusLabel, 300), 72, 525, txt);
+                hits.add(new Hit("gross", 36, 494, 396, 548));
             }
         }
 
@@ -806,123 +818,124 @@ final class MorgenView extends FrameLayout {
         private void zeichneSegmentLeiste(Canvas c, MorgenDaten.Segment seg, float prog) {
             int n = status.gruppen.isEmpty() ? Math.max(1, status.n) : status.gruppen.size();
             int actG = Math.max(0, Math.min(n - 1, seg.gruppe));
-            float x0 = 28, totalW = W - 56, gap = n > 7 ? 5f : 7f;
-            float segW = (totalW - gap * (n - 1)) / n;
+
+            double gesamt = status.gesamtDauer;
+            if (gesamt <= 0.5 && !status.gruppen.isEmpty()) {
+                for (MorgenDaten.Gruppe g : status.gruppen) gesamt += g.dauer;
+            }
+            String gesamtTxt = gesamt > 0.5 ? fmtDauer(gesamt) : "";
+            float durW = 0f;
+            if (!gesamtTxt.isEmpty()) {
+                txt.setFontFeatureSettings("tnum");
+                txt.setTypeface(tfMed); txt.setTextSize(12.5f);
+                durW = txt.measureText(gesamtTxt);
+                txt.setTextAlign(Paint.Align.RIGHT);
+                txt.setColor(0xCCFFFFFF);
+                c.drawText(gesamtTxt, W - 28f, 20.5f, txt);
+                txt.setTextAlign(Paint.Align.LEFT);
+                txt.setFontFeatureSettings(null);
+            }
+            float durSpace = durW > 0f ? durW + 14f : 0f;
+
+            float x0 = 28f, gap = n > 7 ? 5f : 7f;
+            float usableW = Math.max(40f, W - 56f - durSpace - gap * (n - 1));
+
+            float[] weights = new float[n];
+            double sumW = 0.0;
+            for (int k = 0; k < n; k++) {
+                float wt;
+                if (!status.gruppen.isEmpty() && k < status.gruppen.size() && status.gruppen.get(k).dauer > 0.5) {
+                    wt = (float) status.gruppen.get(k).dauer;
+                } else {
+                    int cnt = (!status.gruppen.isEmpty() && k < status.gruppen.size()) ? status.gruppen.get(k).count : 1;
+                    wt = Math.max(1f, cnt * 12f);
+                }
+                weights[k] = wt;
+                sumW += wt;
+            }
+            float minW = Math.min(24f, usableW / n);
+            float remW = Math.max(0f, usableW - minW * n);
 
             p.setStyle(Paint.Style.FILL);
             txt.setTextAlign(Paint.Align.LEFT);
+            float sx = x0;
             for (int k = 0; k < n; k++) {
-                float sx = x0 + k * (segW + gap);
+                float segW = minW + (sumW > 0 ? remW * (weights[k] / (float) sumW) : (remW / n));
                 p.setColor(0x38FFFFFF);
-                rf.set(sx, 14, sx + segW, 18.5f);
+                rf.set(sx, 14f, sx + segW, 18.5f);
                 c.drawRoundRect(rf, 2.5f, 2.5f, p);
 
                 float fill = 0f;
-                if (k < actG) fill = 1f;
-                else if (k == actG) fill = Math.max(0.05f, Math.min(1f, (seg.gruppeI + prog) / Math.max(1f, seg.gruppeN)));
+                if (k < actG) {
+                    fill = 1f;
+                } else if (k == actG) {
+                    MorgenDaten.Gruppe actGrp = (!status.gruppen.isEmpty() && k < status.gruppen.size()) ? status.gruppen.get(k) : null;
+                    if (actGrp != null && actGrp.dauer > 0.5 && seg.dauer > 0.1) {
+                        fill = (float) Math.max(0.03, Math.min(1.0, (seg.gruppeOffset + prog * seg.dauer) / actGrp.dauer));
+                    } else {
+                        fill = Math.max(0.05f, Math.min(1f, (seg.gruppeI + prog) / Math.max(1f, seg.gruppeN)));
+                    }
+                }
                 if (fill > 0.005f) {
-                    p.setColor(k == actG ? 0xF8FFFFFF : 0xE6FFFFFF);
-                    rf.set(sx, 14, sx + segW * fill, 18.5f);
+                    p.setColor(k == actG ? 0xFFFFFFFF : 0xDCFFFFFF);
+                    rf.set(sx, 14f, sx + segW * fill, 18.5f);
                     c.drawRoundRect(rf, 2.5f, 2.5f, p);
                 }
 
-                if (!status.gruppen.isEmpty()) {
+                if (!status.gruppen.isEmpty() && k < status.gruppen.size() && segW >= 22f) {
                     String lbl = status.gruppen.get(k).label;
                     txt.setTypeface(k == actG ? tfMed : tfNorm);
                     txt.setTextSize(10.5f);
-                    txt.setColor(k == actG ? 0xF0FFFFFF : (k < actG ? 0xA0FFFFFF : 0x60FFFFFF));
-                    c.drawText(kuerzen(txt, lbl, segW - 2), sx + 1, 31, txt);
+                    txt.setColor(k == actG ? 0xF5FFFFFF : (k < actG ? 0x9CFFFFFF : 0x5EFFFFFF));
+                    c.drawText(kuerzen(txt, lbl, segW - 2f), sx + 1f, 32f, txt);
                 }
+                sx += segW + gap;
             }
         }
 
-        private void zeichneKopfZeile(Canvas c, int dotCol, String titel, String sub, String zaehler) {
+        private String fmtDauer(double sec) {
+            int s = Math.max(1, (int) Math.round(sec));
+            return (s / 60) + ":" + String.format(Locale.ROOT, "%02d", s % 60);
+        }
+
+        private void zeichneKopfZeile(Canvas c, int dotCol, String titel, String sub) {
             txt.setTextAlign(Paint.Align.LEFT);
-            txt.setTypeface(tfMed); txt.setTextSize(14.5f);
+            txt.setTypeface(tfMed); txt.setTextSize(14f);
             float tw = txt.measureText(titel);
             String subTxt = sub.isEmpty() ? "" : ("  ·  " + sub);
             txt.setTypeface(tfNorm); txt.setTextSize(13.5f);
             float sw = txt.measureText(subTxt);
-            float pw = Math.min(720, 50 + tw + sw);
+            float pw = Math.min(540f, 44f + tw + sw);
 
-            zeichneGlasKarte(c, 28, 42, pw, 34, 0xB20D141C, 0x24FFFFFF, 17);
+            zeichneGlasKarte(c, 28f, 45f, pw, 36f, 0x8F0F121A, 0x24FFFFFF, 18f);
             p.setStyle(Paint.Style.FILL);
             p.setColor(dotCol);
-            c.drawCircle(47, 59, 5, p);
+            c.drawCircle(46f, 63f, 4.5f, p);
 
-            txt.setTypeface(tfMed); txt.setTextSize(14.5f); txt.setColor(0xFFFFFFFF);
-            c.drawText(titel, 60, 64, txt);
+            txt.setTypeface(tfMed); txt.setTextSize(14f); txt.setColor(0xFFFFFFFF);
+            c.drawText(titel, 58f, 68f, txt);
             if (!subTxt.isEmpty()) {
-                txt.setTypeface(tfNorm); txt.setTextSize(13.5f); txt.setColor(0xC4D2DEEB);
-                c.drawText(kuerzen(txt, subTxt, pw - 48 - tw), 60 + tw, 64, txt);
+                txt.setTypeface(tfNorm); txt.setTextSize(13.5f); txt.setColor(0xCCFFFFFF);
+                c.drawText(kuerzen(txt, subTxt, pw - 44f - tw), 58f + tw, 68f, txt);
             }
 
-            txt.setTextAlign(Paint.Align.RIGHT);
-            txt.setTypeface(tfNorm); txt.setTextSize(13); txt.setColor(0xAADCE6F0);
-            c.drawText(zaehler, 882, 64, txt);
-            txt.setTextAlign(Paint.Align.LEFT);
-
-            // Close button (top right)
-            p.setStyle(Paint.Style.FILL); p.setColor(0x20FFFFFF);
-            c.drawCircle(914, 59, 18, p);
-            drawIcon(c, "mdi:close", 904, 49, 20, 0xE0FFFFFF);
-            hits.add(new Hit("stopp", 888, 34, 944, 86));
-        }
-
-        private void zeichneFussLeiste(Canvas c, String modeLabel, String nextLabel, boolean mitMehr, float animS) {
-            float y = 502;
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x18FFFFFF);
-            c.drawRect(28, y - 14, W - 28, y - 13, p);
-
-            // Equalizer wave left
-            p.setColor(0xFF7AB8F5);
-            for (int k = 0; k < 5; k++) {
-                float ph = status.pause ? (k * 0.9f) : (animS * (3.2f + k * 0.45f) + k * 0.8f);
-                float bh = 8f + 13f * (float) (.5 + .5 * Math.sin(ph));
-                rf.set(32 + k * 6f, y + 22 - bh * .5f, 35.5f + k * 6f, y + 22 + bh * .5f);
-                c.drawRoundRect(rf, 2, 2, p);
-            }
-
-            txt.setTextAlign(Paint.Align.LEFT);
-            txt.setTypeface(tfMed); txt.setTextSize(13.5f); txt.setColor(0xFFEBF2F8);
-            c.drawText(kuerzen(txt, modeLabel, 250), 70, y + 20, txt);
-            txt.setTypeface(tfNorm); txt.setTextSize(12); txt.setColor(0xB8B4C4D4);
-            c.drawText(kuerzen(txt, nextLabel, 260), 70, y + 37, txt);
-
-            // Unified pill buttons right-to-left
-            float rx = 935;
-            rx = zeichneSteuerKnopf(c, "stopp", rx, y + 2, "Stopp", 0x2EE85C52, 0x6EF28078, 0xFFF5B5B0) - 10;
-            if (mitMehr) {
-                rx = zeichneSteuerKnopf(c, "mehr", rx, y + 2, "+ Mehr dazu", 0x2E6FB3F2, 0x786FB3F2, 0xFFB3D8FA) - 10;
-            }
-            rx = zeichneSteuerKnopf(c, "naechste", rx, y + 2, "Überspringen ›", 0x1AFFFFFF, 0x32FFFFFF, 0xFFFFFFFF) - 10;
-            rx = zeichneSteuerKnopf(c, "pause", rx, y + 2, status.pause ? "Weiter" : "Pause", 0xEBFFFFFF, 0xFFFFFFFF, 0xFF0D1720) - 10;
-            zeichneSteuerKnopf(c, "zurueck_seg", rx, y + 2, "‹ Zurück", 0x16FFFFFF, 0x2CFFFFFF, 0xFFDCE6F0);
-        }
-
-        private float zeichneSteuerKnopf(Canvas c, String id, float rightX, float y, String label, int bg, int border, int fg) {
-            txt.setTypeface(tfMed); txt.setTextSize(14);
-            float w = txt.measureText(label) + 32;
-            float x = rightX - w;
-            zeichneGlasKarte(c, x, y, w, 40, bg, border, 20);
-            txt.setColor(fg);
-            c.drawText(label, x + 16, y + 25, txt);
-            hits.add(new Hit(id, x - 2, y - 6, x + w + 2, y + 46));
-            return x;
+            // Close circle (top right)
+            zeichneGlasKarte(c, 893f, 42f, 42f, 42f, 0x850F121A, 0x29FFFFFF, 21f);
+            drawIcon(c, "mdi:close", 904f, 53f, 20f, 0xFFFFFFFF);
+            hits.add(new Hit("stopp", 886f, 36f, 944f, 92f));
         }
 
         private void zeichneKaraokeBox(Canvas c, float x, float y, float w, float h, String text, float prog, float fs) {
-            zeichneGlasKarte(c, x, y, w, h, 0xC60C131C, 0x22FFFFFF, 18);
+            zeichneGlasKarte(c, x, y, w, h, 0xB80C131C, 0x22FFFFFF, 20);
             karP.setTypeface(tfNorm); karP.setTextSize(fs);
             karActP.setTypeface(tfMed); karActP.setTextSize(fs);
-            karLayout.bauen(text, karP, w - 44, fs * 1.48f);
-            karScrollY = zeichneKaraoke(c, karLayout, text, prog, status.karaoke, x + 22, y + 14, w - 44, h - 24, karScrollY);
+            karLayout.bauen(text, karP, w - 48, fs * 1.48f);
+            karScrollY = zeichneKaraoke(c, karLayout, text, prog, status.karaoke, x + 24, y + 18, w - 48, h - 32, karScrollY);
         }
 
         private float zeichneKaraoke(Canvas c, WortLayout layout, String text, float prog, boolean karaoke,
                                      float x, float y, float w, float h, float scrollY) {
-            if (layout.woerter.isEmpty()) return 0;
+            if (layout.woerter.isEmpty() || h <= 4f) return 0;
             float curChar = prog * (text == null ? 0 : text.length());
             int aktivIdx = -1, aktiveZeile = 0;
             if (karaoke && prog > 0 && prog < 0.995f) {
@@ -938,8 +951,16 @@ final class MorgenView extends FrameLayout {
             float neuScroll = scrollY + (zielScroll - scrollY) * .22f;
             if (Math.abs(zielScroll - neuScroll) < .5f) neuScroll = zielScroll;
 
-            c.save();
-            c.clipRect(x - 6, y - 4, x + w + 6, y + h + 4);
+            if (maskP.getShader() == null || maskY != y || maskH != h) {
+                maskY = y; maskH = h;
+                maskP.setShader(new LinearGradient(
+                    0f, y, 0f, y + h,
+                    new int[]{0x00000000, 0xFF000000, 0xFF000000, 0x00000000},
+                    new float[]{0f, 0.08f, 0.85f, 1f},
+                    Shader.TileMode.CLAMP
+                ));
+            }
+            int layer = c.saveLayer(x - 8f, y - 4f, x + w + 8f, y + h + 4f, null);
             float baseAscent = -karP.ascent();
             for (int i = 0; i < layout.woerter.size(); i++) {
                 Wort wo = layout.woerter.get(i);
@@ -952,14 +973,15 @@ final class MorgenView extends FrameLayout {
                     karActP.setColor(0xFFFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karActP);
                 } else if (wo.ende <= curChar) {
-                    karP.setColor(0xDCFFFFFF);
+                    karP.setColor(0xE0FFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karP);
                 } else {
-                    karP.setColor(0x5AFFFFFF);
+                    karP.setColor(0x5EFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karP);
                 }
             }
-            c.restore();
+            c.drawRect(x - 8f, y - 4f, x + w + 8f, y + h + 4f, maskP);
+            c.restoreToCount(layer);
             return neuScroll;
         }
 
@@ -1061,19 +1083,39 @@ final class MorgenView extends FrameLayout {
             }
         }
 
-        private void zeichneBildGerundet(Canvas c, Bitmap bm, float x, float y, float w, float h, float rad) {
+        private void drawSoftShadow(Canvas c, float x, float y, float w, float h, float rad, float dyOff, float blur, float totalAlpha) {
+            final int steps = 12;
+            p.setStyle(Paint.Style.FILL);
+            float sumW = 0f;
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;
+                sumW += 0.16f + 0.84f * t * t;
+            }
+            float targetSum = (float) -Math.log(Math.max(0.05, 1.0 - totalAlpha));
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;
+                float exp = blur * (1f - t);
+                float oy = dyOff * (0.45f + 0.55f * (1f - t));
+                float wStep = 0.16f + 0.84f * t * t;
+                int a = Math.max(2, Math.min(255, Math.round(255f * (targetSum * wStep / sumW))));
+                p.setColor(a << 24);
+                rf.set(x - exp, y + oy - exp * 0.65f, x + w + exp, y + h + oy + exp);
+                c.drawRoundRect(rf, rad + exp * 0.55f, rad + exp * 0.55f, p);
+            }
+        }
+
+        private void drawBitmapCenterCrop(Canvas c, Bitmap bm, float x, float y, float w, float h, int alpha, Paint targetPaint) {
             int bw = bm.getWidth(), bh = bm.getHeight();
             if (bw <= 0 || bh <= 0) return;
-            float tr = w / h, br = bw / (float) bh;
-            int sx = 0, sy = 0, sw = bw, sh = bh;
-            if (br > tr) { sw = Math.round(bh * tr); sx = (bw - sw) / 2; }
-            else { sh = Math.round(bw / tr); sy = (bh - sh) / 2; }
-            srcR.set(sx, sy, sx + sw, sy + sh);
+            float sc = Math.max(w / bw, h / bh);
+            float sw = w / sc, sh = h / sc;
+            int sl = Math.max(0, Math.round((bw - sw) * 0.5f));
+            int st = Math.max(0, Math.round((bh - sh) * 0.5f));
+            srcR.set(sl, st, Math.min(bw, Math.round(sl + sw)), Math.min(bh, Math.round(st + sh)));
             rf.set(x, y, x + w, y + h);
-            clipPath.reset(); clipPath.addRoundRect(rf, rad, rad, Path.Direction.CW);
-            c.save(); c.clipPath(clipPath); c.drawBitmap(bm, srcR, rf, bildP); c.restore();
-            linie.setStrokeWidth(1f); linie.setColor(0x28FFFFFF);
-            c.drawRoundRect(rf, rad, rad, linie);
+            targetPaint.setAlpha(alpha);
+            c.drawBitmap(bm, srcR, rf, targetPaint);
+            targetPaint.setAlpha(255);
         }
 
         private float zeichneMehrzeilig(Canvas c, String s, Paint pt, float x, float y, float maxW, float lh, int maxZ) {
@@ -1151,14 +1193,22 @@ final class MorgenView extends FrameLayout {
                 int a = e.getActionMasked();
                 if (a == MotionEvent.ACTION_DOWN) {
                     downX = e.getX(); downY = e.getY();
-                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) < 34) {
-                    float vx = (e.getX() - dx) / skala, vy = (e.getY() - dy) / skala;
-                    for (int i = hits.size() - 1; i >= 0; i--) {
-                        Hit h = hits.get(i);
-                        if (h.trifft(vx, vy)) {
-                            performClick();
-                            ausfuehren(h.id);
-                            return true;
+                } else if (a == MotionEvent.ACTION_UP) {
+                    float dxTap = e.getX() - downX, dyTap = e.getY() - downY;
+                    if (Math.abs(dxTap) > 70f * skala && Math.abs(dyTap) < 55f * skala) {
+                        performClick();
+                        ausfuehren(dxTap < 0 ? "naechste" : "zurueck_seg");
+                        return true;
+                    }
+                    if (Math.hypot(dxTap, dyTap) < 34f * skala) {
+                        float vx = (e.getX() - dx) / skala, vy = (e.getY() - dy) / skala;
+                        for (int i = hits.size() - 1; i >= 0; i--) {
+                            Hit h = hits.get(i);
+                            if (h.trifft(vx, vy)) {
+                                performClick();
+                                ausfuehren(h.id);
+                                return true;
+                            }
                         }
                     }
                 }
