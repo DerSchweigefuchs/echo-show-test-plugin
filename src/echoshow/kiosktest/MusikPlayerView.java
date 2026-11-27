@@ -551,11 +551,8 @@ final class MusikPlayerView extends FrameLayout {
             float cy = lyrikModus ? 104f : 132f;
             float rad = lyrikModus ? 18f : 22f;
 
-            // Shadow
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x66000000);
-            rf.set(cx + 2f, cy + 12f, cx + sz + 2f, cy + sz + 18f);
-            c.drawRoundRect(rf, rad, rad, p);
+            // Soft drop shadow (matching CSS box-shadow: 0 18px 50px rgba(0,0,0,.5))
+            drawSoftShadow(c, cx, cy, sz, sz, rad, lyrikModus ? 10f : 14f, lyrikModus ? 20f : 28f, 0.48f);
 
             boolean hatBild = pl != null && !pl.picture.isEmpty() && pl.picture.equals(coverUrl) && coverScharf != null && !coverScharf.isRecycled();
             c.save();
@@ -1003,11 +1000,31 @@ final class MusikPlayerView extends FrameLayout {
             hits.add(0, new Hit("pop_bg", "", px, py, px + pw, py + ph));
         }
 
-        private void drawPopoverShell(Canvas c, float x, float y, float w, float h) {
+        /** Smooth hardware-accelerated soft drop shadow (API 24+ safe, zero hard edges). */
+        private void drawSoftShadow(Canvas c, float x, float y, float w, float h, float rad, float dyOff, float blur, float totalAlpha) {
+            final int steps = 12;
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x8C000000);
-            rf.set(x + 2f, y + 12f, x + w + 2f, y + h + 14f);
-            c.drawRoundRect(rf, 22f, 22f, p);
+            float sumW = 0f;
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;
+                sumW += 0.16f + 0.84f * t * t;
+            }
+            float targetSum = (float) -Math.log(Math.max(0.05, 1.0 - totalAlpha));
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;       // 0 = outermost, 1 = innermost
+                float exp = blur * (1f - t);
+                float oy = dyOff * (0.45f + 0.55f * (1f - t));
+                float wStep = 0.16f + 0.84f * t * t;
+                int a = Math.max(2, Math.min(255, Math.round(255f * (targetSum * wStep / sumW))));
+                p.setColor(a << 24);
+                rf.set(x - exp, y + oy - exp * 0.65f, x + w + exp, y + h + oy + exp);
+                c.drawRoundRect(rf, rad + exp * 0.55f, rad + exp * 0.55f, p);
+            }
+        }
+
+        private void drawPopoverShell(Canvas c, float x, float y, float w, float h) {
+            drawSoftShadow(c, x, y, w, h, 22f, 10f, 22f, 0.46f);
+            p.setStyle(Paint.Style.FILL);
             p.setColor(0xFF24282C);
             rf.set(x, y, x + w, y + h);
             c.drawRoundRect(rf, 22f, 22f, p);
