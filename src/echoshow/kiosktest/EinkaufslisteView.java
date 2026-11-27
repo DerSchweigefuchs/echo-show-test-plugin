@@ -2,6 +2,7 @@ package echoshow.kiosktest;
 
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.DashPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -107,9 +108,20 @@ final class EinkaufslisteView extends FrameLayout {
     private String stil = "block";          // "block" | "zettel" | "schlicht"
     private boolean vorschlaege = true;
     private String aufraeumen = "nachts";   // "sofort" | "nachts" | "hand"
+    private boolean angehaengt;
     private String fehler;
     private float listScrollY, listMaxScroll;
     private float skala = 1f, dx, dy;
+
+    private final Runnable liveTick = new Runnable() {
+        @Override public void run() {
+            if (!angehaengt) return;
+            if (!eingabe.hasFocus() && !canvasView.istZiehend() && !aktivListeId.isEmpty()) {
+                itemsLaden(aktivListeId);
+            }
+            mainHandler.postDelayed(this, 5000L);
+        }
+    };
 
     EinkaufslisteView(Context ctx, KsTheme theme, String initListe, Typeface handschrift, Aktionen aktionen) {
         super(ctx);
@@ -148,6 +160,19 @@ final class EinkaufslisteView extends FrameLayout {
             return false;
         });
         addView(eingabe, new LayoutParams(200, 48));
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        angehaengt = true;
+        mainHandler.removeCallbacks(liveTick);
+        mainHandler.postDelayed(liveTick, 5000L);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        angehaengt = false;
+        mainHandler.removeCallbacksAndMessages(null);
+        super.onDetachedFromWindow();
     }
 
     void setDaten(Object haKonfig, Object haVerlauf, String fehler) {
@@ -412,10 +437,13 @@ final class EinkaufslisteView extends FrameLayout {
     private void absendenEingabe() {
         String txt = eingabe.getText() == null ? "" : eingabe.getText().toString();
         eingabe.setText("");
-        eingabe.clearFocus();
-        InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) imm.hideSoftInputFromWindow(eingabe.getWindowToken(), 0);
         neu(txt);
+    }
+
+    private void verlaufMerkenCacheReset() {
+        Map<String, Object> vmsg = new LinkedHashMap<>();
+        vmsg.put("type", "echo_show/einkauf/verlauf");
+        haCall(vmsg, null);
     }
 
     private List<String> vorschlaegeListe(int max) {
@@ -448,7 +476,7 @@ final class EinkaufslisteView extends FrameLayout {
 
     private float rechtsX() { return "block".equals(stil) ? 675f : ("zettel".equals(stil) ? 640f : 615f); }
     private float rechtsY() { return "block".equals(stil) ? 40f : 100f; }
-    private float rechtsR() { return "schlicht".equals(stil) ? 933f : 937f; }
+    private float rechtsR() { return 937f; }
 
     private void layoutEingabe() {
         int gw = getWidth(), gh = getHeight();
@@ -481,15 +509,17 @@ final class EinkaufslisteView extends FrameLayout {
     private final class CanvasView extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint lPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint dashP = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint tPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rf = new RectF();
+        private final Path sheetClip = new Path();
         private final Path iconTmp = new Path();
         private final Map<String, Path> iconCache = new HashMap<>();
         private final List<Hit> hits = new ArrayList<>();
 
-        private final Shader bgHand = new RadialGradient(W * 0.30f, H * 0.40f, W * 0.72f, 0xFF22292B, 0xFF121617, Shader.TileMode.CLAMP);
-        private final Shader bgSchlichtGlow = new RadialGradient(W * 0.25f, H * 0.40f, W * 0.50f, 0x1A8BC34A, 0x008BC34A, Shader.TileMode.CLAMP);
-        private final Shader zettelBg = new LinearGradient(0, 0, 120, 500, new int[] {0xFFFFF3A6, 0xFFFDE77C, 0xFFF5E27A}, new float[] {0f, 0.6f, 1f}, Shader.TileMode.CLAMP);
+        private final Shader bgHand = new RadialGradient(W * 0.30f, H * 0.40f, 532f, 0xFF22292B, 0xFF121617, Shader.TileMode.CLAMP);
+        private final Shader bgSchlichtGlow = new RadialGradient(W * 0.25f, H * 0.40f, 401f, 0x1A8BC34A, 0x008BC34A, Shader.TileMode.CLAMP);
+        private final Shader zettelBg = new LinearGradient(0, 0, 88f, 500f, new int[] {0xFFFFF3A6, 0xFFFDE77C, 0xFFF6D965}, new float[] {0f, 0.6f, 1f}, Shader.TileMode.CLAMP);
         private final Shader spiralGrad = new LinearGradient(0, 0, 12, 0, new int[] {0xFF7D8488, 0xFFD9DDE0, 0xFF8B9296}, new float[] {0f, 0.45f, 1f}, Shader.TileMode.REPEAT);
 
         private float downX, downY, lastY;
@@ -504,12 +534,39 @@ final class EinkaufslisteView extends FrameLayout {
             }
         };
 
+        boolean istZiehend() { return ziehend; }
+
         CanvasView(Context ctx) {
             super(ctx);
             setClickable(true);
             lPaint.setStyle(Paint.Style.STROKE);
             lPaint.setStrokeCap(Paint.Cap.ROUND);
             lPaint.setStrokeJoin(Paint.Join.ROUND);
+            dashP.setStyle(Paint.Style.STROKE);
+            dashP.setStrokeWidth(2f);
+            dashP.setColor(0x59FFFFFF);
+            dashP.setPathEffect(new DashPathEffect(new float[] {4f, 3f}, 0f));
+        }
+
+        private void drawSoftShadow(Canvas c, float x, float y, float w, float h, float rad, float dyOff, float blur, float totalAlpha) {
+            final int steps = 9;
+            p.setStyle(Paint.Style.FILL);
+            float sumW = 0f;
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;
+                sumW += 0.20f + 0.80f * t * t;
+            }
+            float targetSum = (float) -Math.log(Math.max(0.05, 1.0 - totalAlpha));
+            for (int i = 0; i < steps; i++) {
+                float t = (i + 0.5f) / steps;
+                float exp = blur * (1f - t);
+                float oy = dyOff * (0.45f + 0.55f * (1f - t));
+                float wStep = 0.20f + 0.80f * t * t;
+                int a = Math.max(2, Math.min(255, Math.round(255f * (targetSum * wStep / sumW))));
+                p.setColor(a << 24);
+                rf.set(x - exp, y + oy - exp * 0.6f, x + w + exp, y + h + oy + exp);
+                c.drawRoundRect(rf, rad + exp * 0.5f, rad + exp * 0.5f, p);
+            }
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -540,12 +597,6 @@ final class EinkaufslisteView extends FrameLayout {
                     p.setShader(null);
                 }
 
-                // Back circle (58, 50)
-                p.setColor(0x1EFFFFFF);
-                c.drawCircle(58f, 50f, 28f, p);
-                drawIcon(c, "mdi:chevron-left", 45f, 37f, 26f, 0xFFECEBE8);
-                hits.add(new Hit("zurueck", "", 22f, 14f, 94f, 86f));
-
                 ListeInfo aktiv = findeListe(aktivListeId);
                 if (aktiv == null && !listen.isEmpty()) aktiv = listen.get(0);
                 List<Eintrag> alle = aktiv != null ? itemsByList.get(aktiv.id) : null;
@@ -568,6 +619,13 @@ final class EinkaufslisteView extends FrameLayout {
                 }
 
                 zeichneRechts(c, aktiv);
+
+                // Top-left back button rendered above notepad/note layers (z-index: 3)
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0x14FFFFFF);
+                c.drawCircle(58f, 50f, 28f, p);
+                drawIcon(c, "mdi:chevron-left", 44f, 36f, 28f, 0xFFECEBE8);
+                hits.add(new Hit("zurueck", "", 30f, 22f, 86f, 78f));
             } catch (RuntimeException ignored) {}
             c.restore();
         }
@@ -589,19 +647,18 @@ final class EinkaufslisteView extends FrameLayout {
                     float th = Math.max(120f, tPaint.measureText(lbl) + 32f);
                     float tw = on ? 62f : 58f;
                     float tx = 590f;
+                    float op = on ? 1f : 0.75f;
+                    drawSoftShadow(c, tx - 6f, ty, tw + 6f, th, 10f, 3f, 8f, 0.35f * op);
                     p.setStyle(Paint.Style.FILL);
-                    p.setColor(0x55000000);
-                    rf.set(tx + 3f, ty + 3f, tx + tw + 3f, ty + th + 3f);
-                    c.drawRoundRect(rf, 10f, 10f, p);
-                    p.setColor(WetterLage.alpha(TAB_FARBEN[k % 4], on ? 1f : 0.75f));
+                    p.setColor(WetterLage.alpha(TAB_FARBEN[k % 4], op));
                     rf.set(tx - 10f, ty, tx + tw, ty + th);
                     c.drawRoundRect(rf, 10f, 10f, p);
 
                     c.save();
-                    c.rotate(90f, tx + tw * 0.5f, ty + th * 0.5f);
+                    c.rotate(90f, tx + tw * 0.5f + 2f, ty + th * 0.5f);
                     tPaint.setTextAlign(Paint.Align.CENTER);
-                    tPaint.setColor(WetterLage.alpha(0xFF3A3020, on ? 1f : 0.8f));
-                    c.drawText(kuerzen(tPaint, lbl, th - 16f), tx + tw * 0.5f, ty + th * 0.5f + 6f, tPaint);
+                    tPaint.setColor(WetterLage.alpha(0xFF3A3020, op));
+                    c.drawText(kuerzen(tPaint, lbl, th - 16f), tx + tw * 0.5f + 2f, ty + th * 0.5f + 6f, tPaint);
                     c.restore();
                     tPaint.setTextAlign(Paint.Align.LEFT);
 
@@ -610,12 +667,10 @@ final class EinkaufslisteView extends FrameLayout {
                 }
             }
 
-            // Paper stack shadow + bottom edge layers
+            // Paper stack shadow + bottom edge layers (border-radius: 4 4 6 6)
             float bx = 100f, by = 34f, bw = 500f, bh = 575f;
+            drawSoftShadow(c, bx, by, bw, bh, 6f, 14f, 22f, 0.48f);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x66000000);
-            rf.set(bx + 4f, by + 10f, bx + bw + 4f, by + bh + 12f);
-            c.drawRoundRect(rf, 6f, 6f, p);
             p.setColor(0xFFD6CFBC);
             rf.set(bx, by + 4f, bx + bw, by + bh + 4f);
             c.drawRoundRect(rf, 6f, 6f, p);
@@ -623,13 +678,15 @@ final class EinkaufslisteView extends FrameLayout {
             rf.set(bx, by + 2f, bx + bw, by + bh + 2f);
             c.drawRoundRect(rf, 6f, 6f, p);
 
-            // Cream paper sheet (#FFF6F0DF)
-            p.setColor(0xFFF6F0DF);
+            // Cream paper sheet (#FFF7F2E4) with rounded corners & clip
+            sheetClip.reset();
             rf.set(bx, by, bx + bw, by + bh);
-            c.drawRoundRect(rf, 6f, 6f, p);
+            sheetClip.addRoundRect(rf, new float[] {4f, 4f, 4f, 4f, 6f, 6f, 6f, 6f}, Path.Direction.CW);
+            p.setColor(0xFFF7F2E4);
+            c.drawPath(sheetClip, p);
 
             c.save();
-            c.clipRect(bx, by, bx + bw, by + bh);
+            c.clipPath(sheetClip);
 
             // Vertical red margin line at x = bx + 66..68
             p.setColor(0xFFE58C8C);
@@ -638,15 +695,11 @@ final class EinkaufslisteView extends FrameLayout {
             // Scrollable ruled lines + content
             float padTop = 22f, rowH = 49f;
             float contentTop = by + padTop;
-            float visibleH = bh - padTop - 10f;
 
-            // Blue ruled lines scrolling with content
-            float firstLineOffset = ((rowH - (listScrollY % rowH)) % rowH);
             p.setColor(0xFFB9CDE3);
             for (float ly = contentTop + 47f - (listScrollY % rowH); ly < by + bh; ly += rowH) {
-                if (ly >= by + 16f) c.drawRect(bx, ly, bx + bw, ly + 2f, p);
+                if (ly >= by) c.drawRect(bx, ly, bx + bw, ly + 2f, p);
             }
-            // Also draw any ruled lines if scroll=0 above first item? No, first line is at contentTop + 47.
 
             float y = contentTop - listScrollY;
             String listTitle = aktiv != null ? aktiv.name : "Einkaufsliste";
@@ -657,7 +710,7 @@ final class EinkaufslisteView extends FrameLayout {
             tPaint.setTextSize(34f);
             tPaint.setColor(0xFF1F3A68);
             String cntTxt = offen != null && nOffen > 0 ? nOffen + " offen" : "";
-            float cntW = cntTxt.isEmpty() ? 0f : 80f;
+            float cntW = cntTxt.isEmpty() ? 0f : 70f;
             c.drawText(kuerzen(tPaint, listTitle, bw - 108f - cntW), bx + 84f, y + rowH - 10f, tPaint);
             if (!cntTxt.isEmpty()) {
                 tPaint.setTypeface(tfHand);
@@ -678,29 +731,26 @@ final class EinkaufslisteView extends FrameLayout {
                 y += rowH;
             } else {
                 for (Eintrag e : offen) {
-                    zeichneHandZeile(c, e, false, bx + 84f, y, bw - 108f, rowH, bx + 32f, 0xFF1F3A68, 0xFF2E8B3D, 0xFFC0392B, -3f, -1.5f, 30f, 26f, by, by + bh);
+                    zeichneHandZeile(c, e, false, true, bx + 84f, y, 384f, rowH, bx + 32f, 0xFF1F3A68, 0xFF2E8B3D, 0xFFC0392B, -3f, -1.5f, 30f, 26f, by, by + bh);
                     y += rowH;
                 }
                 if (nOffen == 0) {
                     tPaint.setTypeface(tfHand);
                     tPaint.setTextSize(27f);
                     tPaint.setColor(0xFF8A93A6);
-                    String emptyTxt = "Nichts mehr zu kaufen";
-                    float tw = tPaint.measureText(emptyTxt);
-                    c.drawText(emptyTxt, bx + 84f, y + rowH - 10f, tPaint);
-                    drawCheckmark(c, bx + 84f + tw + 10f, y + rowH - 25f, 16f, 0xFF8A93A6);
+                    c.drawText("Nichts mehr zu kaufen ✓", bx + 84f, y + rowH - 10f, tPaint);
                     y += rowH;
                 }
                 if (!fertig.isEmpty()) {
                     for (Eintrag e : fertig) {
-                        zeichneHandZeile(c, e, true, bx + 84f, y, bw - 108f, rowH, bx + 32f, 0xFF8A93A6, 0xFF2E8B3D, 0xFFC0392B, -3f, -1.5f, 30f, 26f, by, by + bh);
+                        zeichneHandZeile(c, e, true, true, bx + 84f, y, 384f, rowH, bx + 32f, 0xFF8A93A6, 0xFF2E8B3D, 0xFFC0392B, -3f, -1.5f, 30f, 26f, by, by + bh);
                         y += rowH;
                     }
                     if (!"sofort".equals(aufraeumen)) {
                         float ry = y;
                         drawIcon(c, "mdi:eraser", bx + 84f, ry + 26f, 20f, 0xFF9AA3B3);
                         tPaint.setTypeface(tfHand);
-                        tPaint.setTextSize(21f);
+                        tPaint.setTextSize(20f);
                         tPaint.setColor(0xFF9AA3B3);
                         c.drawText("Abgehakte wegradieren", bx + 112f, ry + 43f, tPaint);
                         if (ry + 56f > by && ry < by + bh) {
@@ -710,30 +760,33 @@ final class EinkaufslisteView extends FrameLayout {
                     }
                 }
             }
-            listMaxScroll = Math.max(0f, (y + listScrollY) - (by + bh - 28f));
+            listMaxScroll = Math.max(0f, (y + listScrollY) - (by + bh - 40f));
             c.restore();
 
-            // 17 metallic spiral rings at top edge
+            // 17 metallic spiral rings at top edge (translate canvas per ring so spiralGrad is symmetric on every ring!)
             float sx0 = bx + 24f;
             float sStep = (bw - 48f - 12f) / 16f;
             for (int i = 0; i < 17; i++) {
                 float sx = sx0 + i * sStep;
+                c.save();
+                c.translate(sx, 0f);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(0x66000000);
-                rf.set(sx, by - 13f, sx + 12f, by + 17f);
-                c.drawRoundRect(rf, 6f, 6f, p);
+                p.setColor(0x55000000);
+                rf.set(0f, by - 12f, 12f, by + 18f);
+                c.drawRoundRect(rf, 7f, 7f, p);
                 p.setShader(spiralGrad);
-                rf.set(sx, by - 14f, sx + 12f, by + 16f);
-                c.drawRoundRect(rf, 6f, 6f, p);
+                rf.set(0f, by - 14f, 12f, by + 16f);
+                c.drawRoundRect(rf, 7f, 7f, p);
                 p.setShader(null);
+                c.restore();
             }
             c.restore();
         }
 
         private void zeichneZettel(Canvas c, ListeInfo aktiv, List<Eintrag> offen, List<Eintrag> fertig) {
-            // Tabs in top-right (left 640..937, top 30)
+            // Tabs in top-right (left 640..937, top 30, vertical gap 10)
             if (listen.size() > 1) {
-                float tx = 640f, ty = 26f;
+                float tx = 640f, ty = 30f;
                 for (int k = 0; k < listen.size(); k++) {
                     ListeInfo l = listen.get(k);
                     boolean on = aktiv != null && l.id.equals(aktiv.id);
@@ -743,17 +796,16 @@ final class EinkaufslisteView extends FrameLayout {
                     tPaint.setTextSize(21f);
                     float pw = tPaint.measureText(lbl) + 26f;
                     float ph = 34f;
-                    if (tx + pw > 937f && tx > 640f) { tx = 640f; ty += 40f; }
+                    if (tx + pw > 937f && tx > 640f) { tx = 640f; ty += ph + 10f; }
+                    float op = on ? 1f : 0.70f;
                     c.save();
                     c.rotate(k % 2 == 0 ? -2f : 2f, tx + pw * 0.5f, ty + ph * 0.5f);
+                    drawSoftShadow(c, tx, ty, pw, ph, 2f, 3f, 6f, 0.35f * op);
                     p.setStyle(Paint.Style.FILL);
-                    p.setColor(0x73000000);
-                    rf.set(tx + 2f, ty + 3f, tx + pw + 2f, ty + ph + 3f);
-                    c.drawRoundRect(rf, 3f, 3f, p);
-                    p.setColor(WetterLage.alpha(TAB_FARBEN[k % 4], on ? 1f : 0.72f));
+                    p.setColor(WetterLage.alpha(TAB_FARBEN[k % 4], op));
                     rf.set(tx, ty, tx + pw, ty + ph);
-                    c.drawRoundRect(rf, 3f, 3f, p);
-                    tPaint.setColor(0xFF3B3214);
+                    c.drawRoundRect(rf, 2f, 2f, p);
+                    tPaint.setColor(WetterLage.alpha(0xFF3B3214, op));
                     c.drawText(lbl, tx + 13f, ty + 24f, tPaint);
                     c.restore();
                     hits.add(new Hit("tab", l.id, tx, ty, tx + pw, ty + ph));
@@ -765,10 +817,8 @@ final class EinkaufslisteView extends FrameLayout {
             c.rotate(-1.8f, 355f, 294f);
             float bx = 120f, by = 44f, bw = 470f, bh = 500f;
 
-            // Shadow + yellow gradient sheet (#FFF5E27A)
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0x88000000);
-            c.drawRect(bx + 4f, by + 12f, bx + bw + 4f, by + bh + 14f, p);
+            // Blurred double shadow + yellow gradient sheet (#FFF6D965)
+            drawSoftShadow(c, bx, by, bw, bh, 2f, 16f, 24f, 0.52f);
             c.save();
             c.translate(bx, by);
             p.setShader(zettelBg);
@@ -787,7 +837,7 @@ final class EinkaufslisteView extends FrameLayout {
             tPaint.setTextSize(39f);
             tPaint.setColor(0xFF2B2A26);
             String cntTxt = offen != null && nOffen > 0 ? nOffen + " offen" : "";
-            float cntW = cntTxt.isEmpty() ? 0f : 80f;
+            float cntW = cntTxt.isEmpty() ? 0f : 72f;
             c.drawText(kuerzen(tPaint, listTitle, bw - 80f - cntW), bx + 44f, y + 32f, tPaint);
             if (!cntTxt.isEmpty()) {
                 tPaint.setTypeface(tfHand);
@@ -811,31 +861,28 @@ final class EinkaufslisteView extends FrameLayout {
                 y += rowH;
             } else {
                 for (Eintrag e : offen) {
-                    zeichneHandZeile(c, e, false, bx + 79f, y, bw - 115f, rowH, bx + 44f, 0xFF2B2A26, 0xFF2E7D32, 0xCC5A4A1A, 2f, 1.2f, 32f, 27f, by, by + bh);
+                    zeichneHandZeile(c, e, false, false, bx + 79f, y, 347f, rowH, bx + 44f, 0xFF2B2A26, 0xFF2E7D32, 0xCC5A4A1A, 2f, 1.2f, 32f, 27f, by, by + bh);
                     y += rowH;
                 }
                 if (nOffen == 0) {
                     tPaint.setTypeface(tfHand);
                     tPaint.setTextSize(27f);
                     tPaint.setColor(0xFF9B8F55);
-                    String emptyTxt = "Nichts mehr zu kaufen";
-                    float tw = tPaint.measureText(emptyTxt);
-                    c.drawText(emptyTxt, bx + 44f, y + 29f, tPaint);
-                    drawCheckmark(c, bx + 44f + tw + 10f, y + 14f, 16f, 0xFF9B8F55);
+                    c.drawText("Nichts mehr zu kaufen ✓", bx + 44f, y + 29f, tPaint);
                     y += rowH;
                 }
                 if (!fertig.isEmpty()) {
                     for (Eintrag e : fertig) {
-                        zeichneHandZeile(c, e, true, bx + 79f, y, bw - 115f, rowH, bx + 44f, 0xFF9B8F55, 0xFF2E7D32, 0xCC5A4A1A, 2f, 1.2f, 32f, 27f, by, by + bh);
+                        zeichneHandZeile(c, e, true, false, bx + 79f, y, 347f, rowH, bx + 44f, 0xFF9B8F55, 0xFF2E7D32, 0xCC5A4A1A, 2f, 1.2f, 32f, 27f, by, by + bh);
                         y += rowH;
                     }
                     if (!"sofort".equals(aufraeumen)) {
                         float ry = y + 10f;
                         drawIcon(c, "mdi:eraser", bx + 44f, ry + 11f, 20f, 0xFF8A7A3A);
                         tPaint.setTypeface(tfHand);
-                        tPaint.setTextSize(21f);
+                        tPaint.setTextSize(20f);
                         tPaint.setColor(0xFF8A7A3A);
-                        c.drawText("Abgehakte wegradieren", bx + 72f, ry + 28f, tPaint);
+                        c.drawText("Abgehakte wegradieren", bx + 78f, ry + 28f, tPaint);
                         if (ry + 42f > by && ry < by + bh) {
                             hits.add(new Hit("rad", "", bx + 40f, Math.max(by, ry), bx + bw - 30f, Math.min(by + bh, ry + 42f)));
                         }
@@ -843,34 +890,35 @@ final class EinkaufslisteView extends FrameLayout {
                     }
                 }
             }
-            listMaxScroll = Math.max(0f, (y + listScrollY) - (by + bh - 24f));
+            listMaxScroll = Math.max(0f, (y + listScrollY) - (by + bh - 30f));
             c.restore();
 
-            // Masking tape at top center
+            // Masking tape at top center with dashed side edges
             c.save();
             c.rotate(2f, bx + 235f, by + 1f);
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x33000000);
-            c.drawRect(bx + 160f, by - 17f, bx + 310f, by + 21f, p);
+            p.setColor(0x28000000);
+            c.drawRect(bx + 160f, by - 16f, bx + 310f, by + 22f, p);
             p.setColor(0x8CEBEBDC);
             c.drawRect(bx + 160f, by - 18f, bx + 310f, by + 20f, p);
+            c.drawLine(bx + 161f, by - 18f, bx + 161f, by + 20f, dashP);
+            c.drawLine(bx + 309f, by - 18f, bx + 309f, by + 20f, dashP);
             c.restore();
 
             c.restore();
         }
 
-        private void zeichneHandZeile(Canvas c, Eintrag e, boolean done, float tx, float y, float maxW, float rowH,
+        private void zeichneHandZeile(Canvas c, Eintrag e, boolean done, boolean istBlock, float tx, float y, float maxW, float rowH,
                                       float boxX, int txtCol, int checkCol, int strikeCol, float boxRot, float strikeRot,
                                       float sizeNorm, float sizeLong, float clipTop, float clipBot) {
-            float cy = y + rowH * 0.5f;
-            float boxY = cy - 10.5f;
+            float boxY = istBlock ? (y + rowH - 5f - 6f - 21f) : (y + rowH * 0.5f - 10.5f);
 
-            // Checkbox
+            // Checkbox (inset 1.25f so outer stroke stays exact 21x21px)
             c.save();
             c.rotate(boxRot, boxX + 10.5f, boxY + 10.5f);
             lPaint.setColor(txtCol);
             lPaint.setStrokeWidth(2.4f);
-            rf.set(boxX, boxY, boxX + 21f, boxY + 21f);
+            rf.set(boxX + 1.25f, boxY + 1.25f, boxX + 19.75f, boxY + 19.75f);
             c.drawRoundRect(rf, 4f, 4f, lPaint);
             c.restore();
 
@@ -893,8 +941,12 @@ final class EinkaufslisteView extends FrameLayout {
                 c.rotate(strikeRot, tx + tw * 0.5f, sy);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(strikeCol);
-                rf.set(tx - 4f, sy - 1.5f, tx + tw + 6f, sy + 1.5f);
-                c.drawRoundRect(rf, 1.5f, 1.5f, p);
+                if (istBlock) {
+                    rf.set(tx - 4f, sy - 1.5f, tx + tw + 6f, sy + 1.5f);
+                    c.drawRoundRect(rf, 1.5f, 1.5f, p);
+                } else {
+                    c.drawRect(tx - 4f, sy - 1.5f, tx + tw + 6f, sy + 1.5f, p);
+                }
                 c.restore();
             }
 
@@ -977,7 +1029,7 @@ final class EinkaufslisteView extends FrameLayout {
 
                     lPaint.setColor(0xFF8BC34A);
                     lPaint.setStrokeWidth(2.5f);
-                    c.drawCircle(lx + 33f, y + rh * 0.5f, 15f, lPaint);
+                    c.drawCircle(lx + 33f, y + rh * 0.5f, 13.75f, lPaint);
 
                     tPaint.setTypeface(tfNorm);
                     tPaint.setTextSize(23f);
@@ -1004,10 +1056,12 @@ final class EinkaufslisteView extends FrameLayout {
                 }
                 if (!fertig.isEmpty()) {
                     y += 14f;
-                    tPaint.setTypeface(tfMed);
+                    tPaint.setLetterSpacing(0.08f);
+                    tPaint.setTypeface(tfNorm);
                     tPaint.setTextSize(13f);
                     tPaint.setColor(0xFFA9B59A);
                     c.drawText("IM WAGEN", lx + 4f, y + 14f, tPaint);
+                    tPaint.setLetterSpacing(0f);
                     if (!"sofort".equals(aufraeumen)) {
                         String radTxt = "Abgehakte entfernen";
                         tPaint.setTypeface(tfNorm);
@@ -1074,19 +1128,21 @@ final class EinkaufslisteView extends FrameLayout {
             List<String> vor = vorschlaegeListe("schlicht".equals(stil) ? 8 : 9);
             if (!vor.isEmpty()) {
                 float cy = ry + 58f + 28f;
-                tPaint.setTypeface(tfMed);
+                tPaint.setLetterSpacing(0.08f);
+                tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(13f);
                 tPaint.setColor(0xFF9DA0A2);
                 c.drawText("NOCHMAL KAUFEN", rx, cy + 12f, tPaint);
+                tPaint.setLetterSpacing(0f);
 
-                float cx = rx + 2f, chipY = cy + 28f;
+                float cx = rx + 2f, chipY = cy + 34f;
                 float maxChipY = "block".equals(stil) ? chipY + 250f : chipY + 200f;
                 for (int k = 0; k < vor.size(); k++) {
                     String item = vor.get(k);
                     tPaint.setTypeface(hand ? tfHandBold : tfNorm);
                     tPaint.setTextSize(hand ? 21f : 16f);
-                    float padL = hand ? 30f : 36f, padR = hand ? 13f : 15f;
-                    float ch = hand ? 36f : 38f;
+                    float padL = hand ? 32f : 38f, padR = hand ? 13f : 15f;
+                    float ch = hand ? 38f : 39f;
                     float cw = Math.min(rw - 4f, padL + tPaint.measureText(item) + padR);
                     if (cx + cw > rr - 2f && cx > rx + 4f) {
                         cx = rx + 2f;
@@ -1097,24 +1153,22 @@ final class EinkaufslisteView extends FrameLayout {
                     c.save();
                     if (hand) {
                         c.rotate(CHIP_ROT[k % 3], cx + cw * 0.5f, chipY + ch * 0.5f);
+                        drawSoftShadow(c, cx, chipY, cw, ch, 2f, 3f, 6f, 0.35f);
                         p.setStyle(Paint.Style.FILL);
-                        p.setColor(0x73000000);
-                        rf.set(cx + 2f, chipY + 3f, cx + cw + 2f, chipY + ch + 3f);
-                        c.drawRoundRect(rf, 2f, 2f, p);
                         p.setColor(CHIP_FARBEN[k % 3]);
                         rf.set(cx, chipY, cx + cw, chipY + ch);
                         c.drawRoundRect(rf, 2f, 2f, p);
-                        drawIcon(c, "mdi:plus", cx + 10f, chipY + 10.5f, 15f, 0xFFA3862B);
+                        drawIcon(c, "mdi:plus", cx + 12f, chipY + 11.5f, 15f, 0xFFA3862B);
                         tPaint.setColor(0xFF3B3214);
-                        c.drawText(kuerzen(tPaint, item, cw - padL - padR), cx + padL, chipY + 25f, tPaint);
+                        c.drawText(kuerzen(tPaint, item, cw - padL - padR), cx + padL, chipY + 26f, tPaint);
                     } else {
                         p.setStyle(Paint.Style.FILL);
                         p.setColor(0x12FFFFFF);
                         rf.set(cx, chipY, cx + cw, chipY + ch);
                         c.drawRoundRect(rf, 16f, 16f, p);
-                        drawIcon(c, "mdi:plus", cx + 13f, chipY + 11f, 16f, 0xFF8BC34A);
+                        drawIcon(c, "mdi:plus", cx + 15f, chipY + 11.5f, 16f, 0xFF8BC34A);
                         tPaint.setColor(0xFFECEBE8);
-                        c.drawText(kuerzen(tPaint, item, cw - padL - padR), cx + padL, chipY + 25f, tPaint);
+                        c.drawText(kuerzen(tPaint, item, cw - padL - padR), cx + padL, chipY + 26f, tPaint);
                     }
                     c.restore();
 
@@ -1123,19 +1177,43 @@ final class EinkaufslisteView extends FrameLayout {
                 }
             }
 
-            // Bottom voice hint
+            // Bottom voice hint (multi-line wrapped, matching bottom: 40px -> top ~504px)
             String lName = aktiv != null ? aktiv.name : "Einkaufsliste";
             String bsp = lName.toLowerCase(Locale.ROOT).endsWith("liste")
                 ? "„Setz Milch auf die " + lName + "“"
                 : "„Setz Zahnpasta auf die Liste " + lName + "“";
-            float vy = H - 56f;
-            drawIcon(c, "mdi:microphone", rx, vy, 22f, ac);
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(14f);
+            float textMaxW = rw - 32f;
+            List<String> bspLines = wrapHint(bsp, tPaint, textMaxW);
+            float lineH = 20f;
+            float hintH = (1 + bspLines.size()) * lineH;
+            float vy = (H - 40f) - hintH;
+            drawIcon(c, "mdi:microphone", rx, vy + 2f, 22f, ac);
             tPaint.setColor(0xFF9DA0A2);
-            c.drawText("Oder einfach sagen:", rx + 32f, vy + 14f, tPaint);
+            c.drawText("Oder einfach sagen:", rx + 32f, vy + 15f, tPaint);
             tPaint.setColor(0xFFECEBE8);
-            c.drawText(kuerzen(tPaint, bsp, rw - 32f), rx + 32f, vy + 34f, tPaint);
+            for (int i = 0; i < bspLines.size(); i++) {
+                c.drawText(bspLines.get(i), rx + 32f, vy + 15f + (i + 1) * lineH, tPaint);
+            }
+        }
+
+        private List<String> wrapHint(String txt, Paint pt, float maxW) {
+            List<String> out = new ArrayList<>();
+            String rest = txt == null ? "" : txt.trim();
+            while (!rest.isEmpty() && out.size() < 3) {
+                if (pt.measureText(rest) <= maxW || out.size() == 2) {
+                    out.add(out.size() == 2 ? kuerzen(pt, rest, maxW) : rest);
+                    break;
+                }
+                int cut = rest.length();
+                while (cut > 0 && pt.measureText(rest.substring(0, cut)) > maxW) cut--;
+                int sp = rest.lastIndexOf(' ', cut);
+                if (sp > 2) cut = sp;
+                out.add(rest.substring(0, cut).trim());
+                rest = rest.substring(cut).trim();
+            }
+            return out;
         }
 
         private int offeneAnzahl(String id) {
@@ -1170,7 +1248,7 @@ final class EinkaufslisteView extends FrameLayout {
                     downHit = findeHit(vx, vy);
                     mainHandler.removeCallbacks(langCheck);
                     if (downHit != null && "chip".equals(downHit.aktion)) {
-                        mainHandler.postDelayed(langCheck, 550L);
+                        mainHandler.postDelayed(langCheck, 650L);
                     }
                 } else if (a == MotionEvent.ACTION_MOVE) {
                     if (Math.hypot(e.getX() - downX, e.getY() - downY) > 14f * skala) {
@@ -1189,8 +1267,17 @@ final class EinkaufslisteView extends FrameLayout {
                             && Math.hypot(e.getX() - downX, e.getY() - downY) < 28f * skala) {
                         Hit h = findeHit(vx, vy);
                         if (h != null) {
+                            if (!"eingabe".equals(h.aktion) && !"plus".equals(h.aktion) && eingabe.hasFocus()) {
+                                eingabe.clearFocus();
+                                InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                                if (imm != null) imm.hideSoftInputFromWindow(eingabe.getWindowToken(), 0);
+                            }
                             performClick();
                             ausfuehren(h);
+                        } else if (eingabe.hasFocus()) {
+                            eingabe.clearFocus();
+                            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                            if (imm != null) imm.hideSoftInputFromWindow(eingabe.getWindowToken(), 0);
                         }
                     }
                     downHit = null;

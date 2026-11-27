@@ -75,20 +75,21 @@ final class GaesteWlanView extends FrameLayout {
     private boolean geraeteZeigen = true;
     private Integer geraeteAnzahl;
 
-    // Interactive UI state
-    private int gewaehlteDauer = 4;
-    private boolean dauerInitialisiert;
-    private boolean passwortVerdeckt;
+    // Persisted UI choices across reopens (matching window.esGwP)
+    private static int gemerkteDauer = 4;
+    private static boolean gemerkteDauerInit;
+    private static boolean gemerktesVerdeckt;
+    private int gewaehlteDauer = gemerkteDauer;
+    private boolean dauerInitialisiert = gemerkteDauerInit;
+    private boolean passwortVerdeckt = gemerktesVerdeckt;
     private boolean aktionLaeuft;
     private boolean angehaengt;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (!angehaengt) return;
-            canvasView.invalidate();
-            if (Boolean.TRUE.equals(an) && !dauerhaft && bisMs > 0) {
-                postDelayed(this, 15_000L);
-            }
+            datenNachladen();
+            postDelayed(this, 10_000L);
         }
     };
 
@@ -175,9 +176,9 @@ final class GaesteWlanView extends FrameLayout {
             if (!dauerInitialisiert && m.get("dauer_h") instanceof Number) {
                 int dh = ((Number) m.get("dauer_h")).intValue();
                 for (int w : DAUER_WERTE) {
-                    if (w == dh) { gewaehlteDauer = dh; break; }
+                    if (w == dh) { gewaehlteDauer = gemerkteDauer = dh; break; }
                 }
-                dauerInitialisiert = true;
+                dauerInitialisiert = gemerkteDauerInit = true;
             }
             passwortZeigen = !Boolean.FALSE.equals(m.get("passwort_zeigen"));
             if (m.containsKey("geraete_zeigen")) {
@@ -217,8 +218,8 @@ final class GaesteWlanView extends FrameLayout {
 
     private void tickPlanen() {
         removeCallbacks(tick);
-        if (angehaengt && Boolean.TRUE.equals(an) && !dauerhaft && bisMs > 0) {
-            postDelayed(tick, 15_000L);
+        if (angehaengt) {
+            postDelayed(tick, 10_000L);
         }
     }
 
@@ -359,9 +360,9 @@ final class GaesteWlanView extends FrameLayout {
 
         private void zeichneKopf(Canvas c, boolean aus) {
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x1EFFFFFF);
+            p.setColor(0x14FFFFFF);
             c.drawCircle(58, 50, 28, p);
-            drawIcon(c, "mdi:chevron-left", 45, 37, 26, TXT);
+            drawIcon(c, "mdi:chevron-left", 44, 36, 28, TXT);
             hits.add(new Hit("zurueck", 22, 14, 94, 86));
 
             t.setTextAlign(Paint.Align.LEFT);
@@ -396,34 +397,33 @@ final class GaesteWlanView extends FrameLayout {
                     bgCol = 0x12FFFFFF;
                     fgCol = 0xFF9DA0A2;
                 }
-                t.setTypeface(tfMed); t.setTextSize(16);
+                t.setTypeface(tfNorm); t.setTextSize(16);
                 float tw = t.measureText(lbl);
-                float pw = 16 + 18 + 8 + tw + 16;
+                float pw = 16 + 18 + 7 + tw + 16;
                 float px = W - 30 - pw, py = 26, ph = 38;
                 rf.set(px, py, px + pw, py + ph);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(bgCol);
                 c.drawRoundRect(rf, 16, 16, p);
-                drawIcon(c, icName, px + 14, py + 10, 18, fgCol);
+                drawIcon(c, icName, px + 16, py + 10, 18, fgCol);
                 t.setColor(fgCol);
-                c.drawText(lbl, px + 39, py + 25, t);
+                c.drawText(lbl, px + 41, py + 25, t);
             }
         }
 
         private void zeichneQrKarte(Canvas c, boolean aus) {
-            float cardSize = 344, cardX = 56, cardY = 122;
+            float cardSize = 390, cardX = 50, cardY = 110;
             rf.set(cardX, cardY, cardX + cardSize, cardY + cardSize);
             p.setStyle(Paint.Style.FILL);
             p.setColor(aus ? 0x22FFFFFF : 0xFFFFFFFF);
             c.drawRoundRect(rf, 22, 22, p);
 
-            float qrSize = 268;
-            float qx = cardX + (cardSize - qrSize) * .5f;
-            float qy = cardY + (cardSize - qrSize) * .5f;
-
             if (qrMatrix != null) {
                 int n = qrMatrix.length;
-                float cell = qrSize / n;
+                int cell = Math.max(1, (int) Math.floor(354f / n));
+                float qrDraw = cell * n;
+                float qx = cardX + (cardSize - qrDraw) * .5f;
+                float qy = cardY + (cardSize - qrDraw) * .5f;
                 qrP.setColor(aus ? 0x24000000 : 0xFF000000);
                 for (int r = 0; r < n; r++) {
                     float top = qy + r * cell;
@@ -438,15 +438,21 @@ final class GaesteWlanView extends FrameLayout {
                     }
                 }
             } else if (fallbackBild != null && !fallbackBild.isRecycled()) {
-                dstR.set(Math.round(qx), Math.round(qy), Math.round(qx + qrSize), Math.round(qy + qrSize));
+                float bw = fallbackBild.getWidth(), bh = fallbackBild.getHeight();
+                float maxBox = 354f;
+                float sc = bw > 0 && bh > 0 ? Math.min(maxBox / bw, maxBox / bh) : 1f;
+                float dw = bw * sc, dh = bh * sc;
+                float qx = cardX + (cardSize - dw) * .5f;
+                float qy = cardY + (cardSize - dh) * .5f;
+                dstR.set(Math.round(qx), Math.round(qy), Math.round(qx + dw), Math.round(qy + dh));
                 qrP.setAlpha(aus ? 35 : 255);
                 c.drawBitmap(fallbackBild, null, dstR, qrP);
                 qrP.setAlpha(255);
-            } else if (!aus) {
-                drawIcon(c, "mdi:qrcode-scan", cardX + (cardSize - 64) * .5f, cardY + 116, 64, 0xFF5D6A74);
+            } else {
+                drawIcon(c, "mdi:qrcode-scan", cardX + (cardSize - 64) * .5f, cardY + 136, 64, aus ? 0x24000000 : 0xFF5D6A74);
                 t.setTextAlign(Paint.Align.CENTER);
-                t.setTypeface(tfNorm); t.setTextSize(15); t.setColor(0xFF5D6A74);
-                c.drawText(!geladen ? "QR-Code wird geladen …" : "QR-Code nicht verfügbar", cardX + cardSize * .5f, cardY + 204, t);
+                t.setTypeface(tfNorm); t.setTextSize(15); t.setColor(aus ? 0x24000000 : 0xFF5D6A74);
+                c.drawText(!geladen || qrMatrixKey.isEmpty() ? "QR-Code wird gelesen …" : "QR-Code nicht verfügbar", cardX + cardSize * .5f, cardY + 224, t);
                 t.setTextAlign(Paint.Align.LEFT);
             }
 
@@ -456,10 +462,10 @@ final class GaesteWlanView extends FrameLayout {
         }
 
         private void zeichneRechts(Canvas c, boolean aus) {
-            float rx = 456, maxW = W - 36 - rx;
+            float rx = 490, maxW = W - 40 - rx;
             if (aus) {
                 t.setTypeface(tfMed); t.setTextSize(28); t.setColor(TXT);
-                c.drawText("Gäste-WLAN ist aus", rx, 158, t);
+                c.drawText("Gäste-WLAN ist aus", rx, 156, t);
 
                 String desc = gewaehlteDauer == 0
                     ? "Einschalten – es bleibt an, bis jemand es ausschaltet."
@@ -467,8 +473,10 @@ final class GaesteWlanView extends FrameLayout {
                 t.setTypeface(tfNorm); t.setTextSize(16); t.setColor(SUB);
                 zeichneZeilen(c, desc, t, rx, 190, maxW, 22, 2);
 
-                t.setTypeface(tfMed); t.setTextSize(13); t.setColor(SUB);
+                t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(SUB);
+                t.setLetterSpacing(0.08f);
                 c.drawText("WIE LANGE?", rx, 260, t);
+                t.setLetterSpacing(0f);
 
                 float cx = rx, cy = 278;
                 t.setTypeface(tfNorm); t.setTextSize(16);
@@ -476,7 +484,7 @@ final class GaesteWlanView extends FrameLayout {
                     int val = DAUER_WERTE[i];
                     String label = DAUER_TEXTE[i];
                     float cw = t.measureText(label) + 32;
-                    if (cx + cw > W - 30) { cx = rx; cy += 48; }
+                    if (cx + cw > W - 40 && cx > rx) { cx = rx; cy += 48; }
                     boolean sel = gewaehlteDauer == val;
                     rf.set(cx, cy, cx + cw, cy + 40);
                     p.setStyle(Paint.Style.FILL);
@@ -488,51 +496,54 @@ final class GaesteWlanView extends FrameLayout {
                     cx += cw + 10;
                 }
 
-                float by = cy + 68;
-                String btnLbl = aktionLaeuft ? "Wird eingeschaltet …" : "Einschalten";
+                float by = cy + 74;
+                String btnLbl = "Einschalten";
                 t.setTypeface(tfMed); t.setTextSize(18);
                 float bw = 24 + 22 + 10 + t.measureText(btnLbl) + 24;
                 rf.set(rx, by, rx + bw, by + 54);
-                p.setColor(aktionLaeuft ? 0x803182B7 : 0xFF3182B7);
+                p.setColor(0xFF3182B7);
                 c.drawRoundRect(rf, 20, 20, p);
-                drawIcon(c, "mdi:wifi", rx + 22, by + 16, 22, 0xFFFFFFFF);
+                drawIcon(c, "mdi:wifi", rx + 24, by + 16, 22, 0xFFFFFFFF);
                 t.setColor(0xFFFFFFFF);
-                c.drawText(btnLbl, rx + 54, by + 33, t);
+                c.drawText(btnLbl, rx + 56, by + 33, t);
                 hits.add(new Hit("act:an", rf.left, rf.top, rf.right, rf.bottom));
                 return;
             }
 
-            // Active / readable view
-            float y = 138;
-            t.setTypeface(tfMed); t.setTextSize(13); t.setColor(SUB);
+            // Active / readable view (left: 490, top: 118)
+            float y = 132;
+            t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(SUB);
+            t.setLetterSpacing(0.08f);
             c.drawText("NETZWERK", rx, y, t);
+            t.setLetterSpacing(0f);
             y += 32;
             String netz = ssid.isEmpty() ? "–" : ssid;
             t.setTypeface(tfMed); t.setTextSize(netz.length() > 22 ? 24 : 30); t.setColor(TXT);
-            y = zeichneZeilen(c, netz, t, rx, y, maxW, 32, 2);
+            y = zeichneZeilen(c, netz, t, rx, y, maxW, 33, 2);
 
             if (passwortZeigen && !passwort.isEmpty()) {
                 y += 36;
-                t.setTypeface(tfMed); t.setTextSize(13); t.setColor(SUB);
-                c.drawText("PASSWORT", rx, y, t);
-                drawIcon(c, passwortVerdeckt ? "mdi:eye-off-outline" : "mdi:eye-outline", rx + 82, y - 14, 18, SUB);
+                t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(SUB);
+                t.setLetterSpacing(0.08f);
+                String pwLbl = "PASSWORT";
+                c.drawText(pwLbl, rx, y, t);
+                float lblW = t.measureText(pwLbl);
+                t.setLetterSpacing(0f);
+                drawIcon(c, passwortVerdeckt ? "mdi:eye-off-outline" : "mdi:eye-outline", rx + lblW + 8, y - 13, 17, SUB);
 
                 float pwTop = y - 18;
-                y += 14;
+                y += 32;
                 String shownPw = passwortVerdeckt ? punkte(Math.min(passwort.length(), 14)) : passwort;
-                rf.set(rx, y, rx + maxW, y + 54);
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0x0DFFFFFF);
-                c.drawRoundRect(rf, 14, 14, p);
-                linie.setStrokeWidth(1f); linie.setColor(0x16FFFFFF);
-                c.drawRoundRect(rf, 14, 14, linie);
-
-                t.setTypeface(tfMono); t.setTextSize(passwort.length() > 18 ? 21 : 27); t.setColor(TXT);
-                c.drawText(kuerzen(t, shownPw, maxW - 28), rx + 14, y + 36, t);
-                hits.add(new Hit("pw_toggle", rx, pwTop, rx + maxW, y + 56));
-                y += 74;
+                t.setTypeface(tfMono);
+                t.setTextSize(passwort.length() > 18 ? 22 : 30);
+                t.setColor(TXT);
+                t.setLetterSpacing(0.04f);
+                y = zeichneZeilenBruch(c, shownPw, t, rx, y, maxW, passwort.length() > 18 ? 27f : 36f);
+                t.setLetterSpacing(0f);
+                hits.add(new Hit("pw_toggle", rx, pwTop, rx + maxW, y + 12));
+                y += 32;
             } else {
-                y += 34;
+                y += 32;
             }
 
             // Chips: connected devices + security
@@ -540,59 +551,73 @@ final class GaesteWlanView extends FrameLayout {
             t.setTypeface(tfNorm); t.setTextSize(16);
             if (geraeteZeigen && geraeteAnzahl != null && !Boolean.FALSE.equals(an)) {
                 String gTxt = geraeteAnzahl == 1 ? "1 Gerät verbunden" : geraeteAnzahl + " Geräte verbunden";
-                float cw = 16 + 18 + 8 + t.measureText(gTxt) + 16;
+                float cw = 16 + 18 + 7 + t.measureText(gTxt) + 16;
                 rf.set(cx, y, cx + cw, y + 38);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x12FFFFFF);
                 c.drawRoundRect(rf, 16, 16, p);
-                drawIcon(c, "mdi:cellphone", cx + 14, y + 10, 18, AC);
+                drawIcon(c, "mdi:cellphone", cx + 16, y + 10, 18, AC);
                 t.setColor(TXT);
-                c.drawText(gTxt, cx + 39, y + 25, t);
+                c.drawText(gTxt, cx + 41, y + 25, t);
                 cx += cw + 10;
             }
             String secTxt = sicherheitText(sicherheit);
             if (!secTxt.isEmpty()) {
-                float cw = 16 + 18 + 8 + t.measureText(secTxt) + 16;
-                if (cx + cw > W - 30) { cx = rx; y += 46; }
+                float cw = 16 + 18 + 7 + t.measureText(secTxt) + 16;
+                if (cx + cw > W - 40 && cx > rx) { cx = rx; y += 46; }
                 rf.set(cx, y, cx + cw, y + 38);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x12FFFFFF);
                 c.drawRoundRect(rf, 16, 16, p);
                 drawIcon(c, "NOPASS".equalsIgnoreCase(sicherheit) ? "mdi:lock-open-variant-outline" : "mdi:lock-outline",
-                    cx + 14, y + 10, 18, SUB);
+                    cx + 16, y + 10, 18, SUB);
                 t.setColor(TXT);
-                c.drawText(secTxt, cx + 39, y + 25, t);
+                c.drawText(secTxt, cx + 41, y + 25, t);
             }
 
-            // Bottom action buttons (+2 h and Ausschalten)
+            // Bottom action buttons (+2 h and Ausschalten at left: 490, top: 448)
             if (hatSchalter && Boolean.TRUE.equals(an)) {
-                float by = 446;
+                float by = 448;
                 float bx = rx;
                 t.setTypeface(tfMed); t.setTextSize(18);
                 if (!dauerhaft) {
                     String pLbl = "+2 h";
-                    float bw = 22 + 22 + 10 + t.measureText(pLbl) + 22;
+                    float bw = 24 + 22 + 10 + t.measureText(pLbl) + 24;
                     rf.set(bx, by, bx + bw, by + 54);
                     p.setStyle(Paint.Style.FILL);
                     p.setColor(0x14FFFFFF);
                     c.drawRoundRect(rf, 20, 20, p);
-                    drawIcon(c, "mdi:timer-plus-outline", bx + 20, by + 16, 22, TXT);
+                    drawIcon(c, "mdi:timer-plus-outline", bx + 24, by + 16, 22, TXT);
                     t.setColor(TXT);
-                    c.drawText(pLbl, bx + 52, by + 33, t);
+                    c.drawText(pLbl, bx + 56, by + 33, t);
                     hits.add(new Hit("act:plus", rf.left, rf.top, rf.right, rf.bottom));
                     bx += bw + 12;
                 }
-                String offLbl = aktionLaeuft ? "Wird geschaltet …" : "Ausschalten";
-                float bw = 22 + 22 + 10 + t.measureText(offLbl) + 22;
+                String offLbl = "Ausschalten";
+                float bw = 24 + 22 + 10 + t.measureText(offLbl) + 24;
                 rf.set(bx, by, bx + bw, by + 54);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x2EE8603C);
                 c.drawRoundRect(rf, 20, 20, p);
-                drawIcon(c, "mdi:wifi-off", bx + 20, by + 16, 22, 0xFFF29A80);
+                drawIcon(c, "mdi:wifi-off", bx + 24, by + 16, 22, 0xFFF29A80);
                 t.setColor(0xFFF29A80);
-                c.drawText(offLbl, bx + 52, by + 33, t);
+                c.drawText(offLbl, bx + 56, by + 33, t);
                 hits.add(new Hit("act:aus", rf.left, rf.top, rf.right, rf.bottom));
             }
+        }
+
+        private float zeichneZeilenBruch(Canvas c, String s, Paint pt, float x, float y, float maxW, float lh) {
+            if (s == null || s.isEmpty()) return y;
+            int idx = 0;
+            float cy = y;
+            while (idx < s.length()) {
+                int end = s.length();
+                while (end > idx + 1 && pt.measureText(s.substring(idx, end)) > maxW) end--;
+                c.drawText(s.substring(idx, end), x, cy, pt);
+                idx = end;
+                if (idx < s.length()) cy += lh;
+            }
+            return cy;
         }
 
         private String restText(long now) {
@@ -608,9 +633,7 @@ final class GaesteWlanView extends FrameLayout {
             if (raw == null || raw.isEmpty()) return "";
             String u = raw.toUpperCase(Locale.ROOT);
             if ("NOPASS".equals(u)) return "offen, ohne Passwort";
-            if (u.contains("SAE")) return "WPA3";
-            if (u.contains("WPA")) return "WPA2/WPA3";
-            return u;
+            return u.replace("SAE", "WPA3").replace("WPA", "WPA2/WPA3");
         }
 
         private String punkte(int n) {
@@ -624,7 +647,7 @@ final class GaesteWlanView extends FrameLayout {
                 int a = e.getActionMasked();
                 if (a == MotionEvent.ACTION_DOWN) {
                     downX = e.getX(); downY = e.getY();
-                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) < 30) {
+                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) <= 14f * skala) {
                     float vx = (e.getX() - dx) / skala, vy = (e.getY() - dy) / skala;
                     for (int i = hits.size() - 1; i >= 0; i--) {
                         Hit h = hits.get(i);
@@ -646,9 +669,12 @@ final class GaesteWlanView extends FrameLayout {
                 if (aktionen != null) aktionen.zurueck();
             } else if ("pw_toggle".equals(id)) {
                 passwortVerdeckt = !passwortVerdeckt;
+                gemerktesVerdeckt = passwortVerdeckt;
                 invalidate();
             } else if (id.startsWith("dauer:")) {
                 gewaehlteDauer = Integer.parseInt(id.substring(6));
+                gemerkteDauer = gewaehlteDauer;
+                gemerkteDauerInit = true;
                 invalidate();
             } else if ("act:an".equals(id)) {
                 skriptAusfuehren("an", gewaehlteDauer);

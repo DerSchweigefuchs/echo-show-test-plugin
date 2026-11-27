@@ -178,6 +178,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo aboChanged = new Dauerabo(KONFIG_ABO, zeit, melder);
     private final Dauerabo aboMusik = new Dauerabo(MUSIK_ABO, zeit, melder);
     private String letzterMusikStand = "";
+    private boolean musikVersatzAn;
     private final Runnable musikNachladenDebounced = () -> TestAnsicht.sicher(this::playerDatenNachladen);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
@@ -581,6 +582,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         synchronized (this) { offen = !h.isHeadless() && aktuell != null && "player".equals(aktuell.m.ansicht); }
         if (!offen) {
             letzterMusikStand = "";
+            musikVersatzAn = false;
             if (main != null) main.removeCallbacks(musikNachladenDebounced);
             aboMusik.setzen(h, null, null);
             return;
@@ -602,11 +604,21 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         if (!ev.containsKey("result")) return;
         Object raw = ev.get("result");
         String stand = raw == null ? "" : String.valueOf(raw);
+        boolean neuVersatz = stand.startsWith("versatz=on|");
+        if (neuVersatz != musikVersatzAn) {
+            musikVersatzAn = neuVersatz;
+            final boolean anFinal = neuVersatz;
+            TestAnsicht a;
+            synchronized (this) { a = aktuell != null && "player".equals(aktuell.m.ansicht) ? aktuell : null; }
+            if (a != null) main().post(() -> TestAnsicht.sicher(() -> a.playerVersatzSetzen(anFinal)));
+        }
         if (stand.equals(letzterMusikStand)) return;
         letzterMusikStand = stand;
         main().removeCallbacks(musikNachladenDebounced);
         main().postDelayed(musikNachladenDebounced, 180L);
     }
+
+    boolean musikVersatzAn() { return musikVersatzAn; }
 
     /** Loads shopping list config (from cached plugin/konfig or HA) + purchase history (echo_show/einkauf/verlauf). */
     private void einkaufslisteLaden(TestAnsicht a) {

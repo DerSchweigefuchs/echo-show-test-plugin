@@ -3,9 +3,13 @@ package echoshow.kiosktest;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -93,14 +97,17 @@ final class MusikPlayerView extends FrameLayout {
     private String lyricsKey = "";
     private MusikDaten.Liedtext liedtext;
     private float lyricsScrollY, lyricsTargetY, lyricsMaxScroll;
-    private int aktivLyrikIdx = -2;
+    private float scrollFromY, scrollToY;
+    private long scrollAnimStartMs, colorAnimStartMs;
+    private int aktivLyrikIdx = -2, prevAktivLyrikIdx = -2;
 
     private String offenPopover = "";   // "" | "dev" | "grp"
     private float popoverScrollY, popoverMaxScroll;
     private boolean versatzSichtbar;
 
     private boolean ziehendSeek;
-    private double seekDragPos;
+    private double seekDragPos, seekLockedPos;
+    private long seekLockUntilMs;
     private long letztesNachladenMs;
 
     private final Runnable nachladenRun = this::triggerNachladen;
@@ -110,6 +117,9 @@ final class MusikPlayerView extends FrameLayout {
         TestAnsicht.sicher(() -> {
             if (versatzSichtbar) {
                 versatzSichtbar = false;
+                if (daten.aktuellerPlayer() != null) {
+                    callService("input_boolean", "turn_off", "input_boolean.musik_liedtext_versatz", null);
+                }
                 canvasView.invalidate();
             }
         });
@@ -149,6 +159,20 @@ final class MusikPlayerView extends FrameLayout {
                 }
             });
             mainHandler.postDelayed(this, 1000L);
+        }
+    };
+
+    private final Runnable tickLyrics250ms = new Runnable() {
+        @Override public void run() {
+            TestAnsicht.sicher(() -> {
+                if (aktionen == null || !aktionen.pausiert()) {
+                    MusikDaten.Player pl = daten.aktuellerPlayer();
+                    if (lyricsAn && pl != null && pl.istLive() && liedtext != null && liedtext.synced) {
+                        canvasView.pruefeLyrikTick(pl, System.currentTimeMillis());
+                    }
+                }
+            });
+            mainHandler.postDelayed(this, 250L);
         }
     };
 
@@ -192,6 +216,15 @@ final class MusikPlayerView extends FrameLayout {
         canvasView.invalidate();
     }
 
+    void setVersatzAn(boolean an) {
+        if (versatzSichtbar != an) {
+            versatzSichtbar = an;
+            if (an) offenPopover = "";
+            versatzTimerNeustarten();
+            canvasView.invalidate();
+        }
+    }
+
     void setCover(String url, Bitmap scharf, Bitmap weich) {
         String u = url == null ? "" : url;
         if (!coverAngefordert.isEmpty() && !u.equals(coverAngefordert)) return;
@@ -209,11 +242,14 @@ final class MusikPlayerView extends FrameLayout {
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         mainHandler.removeCallbacks(tick1s);
+        mainHandler.removeCallbacks(tickLyrics250ms);
         mainHandler.postDelayed(tick1s, 1000L);
+        mainHandler.postDelayed(tickLyrics250ms, 250L);
     }
 
     @Override protected void onDetachedFromWindow() {
         mainHandler.removeCallbacks(tick1s);
+        mainHandler.removeCallbacks(tickLyrics250ms);
         mainHandler.removeCallbacks(nachladenRun);
         mainHandler.removeCallbacks(versatzAusRun);
         super.onDetachedFromWindow();
@@ -228,7 +264,12 @@ final class MusikPlayerView extends FrameLayout {
         lyricsLaden = true;
         lyricsScrollY = 0f;
         lyricsTargetY = 0f;
+        scrollFromY = 0f;
+        scrollToY = 0f;
+        scrollAnimStartMs = 0L;
+        colorAnimStartMs = 0L;
         aktivLyrikIdx = -2;
+        prevAktivLyrikIdx = -2;
         if (aktionen == null) return;
 
         Map<String, Object> msg = new LinkedHashMap<>();
@@ -240,6 +281,9 @@ final class MusikPlayerView extends FrameLayout {
                 lyricsLaden = false;
                 liedtext = ok ? MusikDaten.lesenLiedtext(data) : new MusikDaten.Liedtext();
                 aktivLyrikIdx = -2;
+                prevAktivLyrikIdx = -2;
+                scrollAnimStartMs = 0L;
+                colorAnimStartMs = 0L;
                 canvasView.invalidate();
             })));
         } catch (RuntimeException ignored) {
@@ -314,16 +358,17 @@ final class MusikPlayerView extends FrameLayout {
         canvasView.invalidate();
     }
 
-    private void versatzAendern(double delta, boolean reset) {
+    private void versatzAendern(double delta) {
         MusikDaten.Player pl = daten.aktuellerPlayer();
         if (pl == null) return;
         double cur = daten.vorlaufFuer(pl);
-        double neu = reset ? 0.0 : Math.max(-3.0, Math.min(6.0, Math.round((cur + delta) * 4.0) / 4.0));
+        double neu = Math.max(-3.0, Math.min(6.0, Math.round((cur + delta) * 4.0) / 4.0));
         daten.vorlauf.put(pl.objectId(), neu);
         daten.aktivVorlauf = neu;
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("value", MusikDaten.vorlaufJson(daten.vorlauf));
-        callService("input_text", "set_value", "input_text.musik_liedtext_vorlauf_geraete", data);
+        data.put("player", pl.entityId);
+        data.put("delta", delta);
+        callService("script", "musik_liedtext_vorlauf_anpassen", null, data);
         aktivLyrikIdx = -2;
         versatzTimerNeustarten();
         canvasView.invalidate();
@@ -331,11 +376,13 @@ final class MusikPlayerView extends FrameLayout {
 
     private void seekTo(MusikDaten.Player pl, double sec) {
         if (pl == null || pl.duration <= 0) return;
-        double s = Math.max(0.0, Math.min(pl.duration, sec));
+        double s = Math.max(0.0, Math.min(pl.duration, Math.round(sec)));
         pl.position = s;
         pl.updatedAtMs = System.currentTimeMillis();
+        seekLockedPos = s;
+        seekLockUntilMs = System.currentTimeMillis() + 2500L;
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("seek_position", Math.round(s * 10.0) / 10.0);
+        data.put("seek_position", Math.round(s));
         callService("media_player", "media_seek", pl.entityId, data);
         aktivLyrikIdx = -2;
         canvasView.invalidate();
@@ -344,6 +391,8 @@ final class MusikPlayerView extends FrameLayout {
     private final class CanvasView extends View implements Choreographer.FrameCallback {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint bPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint maskPaint = new Paint();
         private final Paint lPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint tPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Typeface tfNorm = Typeface.create("sans-serif", Typeface.NORMAL);
@@ -357,6 +406,7 @@ final class MusikPlayerView extends FrameLayout {
         private final List<Hit> hits = new ArrayList<>();
         private final List<LyrikLayoutZeile> lyrikLayout = new ArrayList<>();
         private String lyrikLayoutKey = "";
+        private float maskY, maskH;
 
         private final Shader scrimGrad = new LinearGradient(0, 0, 0, H, 0x26000000, 0x73000000, Shader.TileMode.CLAMP);
 
@@ -372,6 +422,7 @@ final class MusikPlayerView extends FrameLayout {
                         callService("input_boolean", "turn_on", "input_boolean.musik_liedtext", null);
                         pruefeLiedtext(daten.aktuellerPlayer());
                     }
+                    callService("input_boolean", "toggle", "input_boolean.musik_liedtext_versatz", null);
                     versatzSichtbar = !versatzSichtbar;
                     if (versatzSichtbar) offenPopover = "";
                     versatzTimerNeustarten();
@@ -387,6 +438,13 @@ final class MusikPlayerView extends FrameLayout {
             setClickable(true);
             lPaint.setStyle(Paint.Style.STROKE);
             lPaint.setStrokeCap(Paint.Cap.ROUND);
+            ColorMatrix cm = new ColorMatrix();
+            cm.setSaturation(1.4f);
+            ColorMatrix br = new ColorMatrix();
+            br.setScale(0.55f, 0.55f, 0.55f, 1f);
+            cm.postConcat(br);
+            bgPaint.setColorFilter(new ColorMatrixColorFilter(cm));
+            maskPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
         }
 
         @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); angehaengt = true; schleife(); }
@@ -394,10 +452,52 @@ final class MusikPlayerView extends FrameLayout {
         @Override protected void onWindowVisibilityChanged(int v) { super.onWindowVisibilityChanged(v); sichtbar = v == VISIBLE; schleife(); }
         @Override public void onVisibilityAggregated(boolean vis) { super.onVisibilityAggregated(vis); schleife(); }
 
+        private void pruefeLyrikTick(MusikDaten.Player pl, long nowMs) {
+            double pos = ziehendSeek ? seekDragPos : (nowMs < seekLockUntilMs ? seekLockedPos : pl.aktuellePosition(nowMs));
+            double lead = daten.vorlaufFuer(pl);
+            int idx = -1;
+            for (int i = 0; i < liedtext.lines.size(); i++) {
+                if (liedtext.lines.get(i).t <= pos + lead) idx = i;
+                else break;
+            }
+            if (idx != aktivLyrikIdx) {
+                rebuildLyricLayout(537f);
+                aktualisiereLyrikZiel(idx, 312f, nowMs);
+                schleife();
+                invalidate();
+            }
+        }
+
+        private void aktualisiereLyrikZiel(int idx, float h, long nowMs) {
+            boolean warInit = (aktivLyrikIdx == -2);
+            prevAktivLyrikIdx = aktivLyrikIdx;
+            aktivLyrikIdx = idx;
+            int targetI = Math.max(0, idx);
+            if (targetI < lyrikLayout.size()) {
+                LyrikLayoutZeile lz = lyrikLayout.get(targetI);
+                float center = lz.topY + lz.height * 0.5f;
+                lyricsTargetY = center - h * 0.35f;
+                if (warInit || Math.abs(lyricsTargetY - lyricsScrollY) > h * 1.5f) {
+                    lyricsScrollY = lyricsTargetY;
+                    scrollFromY = lyricsTargetY;
+                    scrollToY = lyricsTargetY;
+                    scrollAnimStartMs = 0L;
+                    colorAnimStartMs = 0L;
+                } else {
+                    scrollFromY = lyricsScrollY;
+                    scrollToY = lyricsTargetY;
+                    scrollAnimStartMs = nowMs;
+                    colorAnimStartMs = nowMs;
+                }
+            }
+        }
+
         void schleife() {
-            MusikDaten.Player pl = daten.aktuellerPlayer();
+            long now = System.currentTimeMillis();
+            boolean animating = (scrollAnimStartMs > 0L && now - scrollAnimStartMs < 450L)
+                || (colorAnimStartMs > 0L && now - colorAnimStartMs < 350L);
             boolean soll = angehaengt && sichtbar && isShown() && (aktionen == null || !aktionen.pausiert())
-                && ((lyricsAn && pl != null && pl.istLive()) || ziehendSeek);
+                && (ziehendSeek || animating);
             if (soll == laeuft) return;
             laeuft = soll;
             Choreographer ch = Choreographer.getInstance();
@@ -407,11 +507,19 @@ final class MusikPlayerView extends FrameLayout {
 
         @Override public void doFrame(long ns) {
             if (!laeuft) return;
-            if (Math.abs(lyricsTargetY - lyricsScrollY) > 0.5f && (liedtext == null || liedtext.synced)) {
-                lyricsScrollY += (lyricsTargetY - lyricsScrollY) * 0.16f;
+            long now = System.currentTimeMillis();
+            if (scrollAnimStartMs > 0L) {
+                float u = Math.max(0f, Math.min(1f, (now - scrollAnimStartMs) / 450f));
+                float ease = 1f - (1f - u) * (1f - u) * (1f - u);
+                lyricsScrollY = scrollFromY + (scrollToY - scrollFromY) * ease;
+                if (u >= 1f) scrollAnimStartMs = 0L;
+            }
+            if (colorAnimStartMs > 0L && now - colorAnimStartMs >= 350L) {
+                colorAnimStartMs = 0L;
             }
             invalidate();
-            Choreographer.getInstance().postFrameCallback(this);
+            schleife();
+            if (laeuft) Choreographer.getInstance().postFrameCallback(this);
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -440,15 +548,15 @@ final class MusikPlayerView extends FrameLayout {
 
                 // 3. Cover + Meta or Lyrics + Seekbar + Controls
                 boolean lyrikModus = lyricsAn && pl != null && pl.istLive();
-                float rightX = lyrikModus ? 284f : 384f;
+                float rightX = 396f, rightW = W - 30f - rightX;
                 zeichneCover(c, pl, lyrikModus);
                 if (lyrikModus) {
-                    zeichneLiedtext(c, pl, rightX, 94f, W - 30f - rightX, 296f, nowMs);
+                    zeichneLiedtext(c, pl, rightX, 92f, rightW, 312f, nowMs);
                 } else {
-                    zeichneMeta(c, pl, rightX, 94f, W - 30f - rightX, 296f);
+                    zeichneMeta(c, pl, rightX, 92f, rightW, 312f);
                 }
-                zeichneSeekbar(c, pl, rightX, 412f, W - 30f - rightX, nowMs);
-                zeichneSteuerung(c, pl, rightX, 472f, W - 30f - rightX);
+                zeichneSeekbar(c, pl, rightX, 428f, rightW, nowMs);
+                zeichneSteuerung(c, pl, rightX, 470f, rightW);
 
                 // 4. Popovers
                 if ("dev".equals(offenPopover)) zeichneGeraetePopover(c, pl);
@@ -458,12 +566,10 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneHintergrund(Canvas c, MusikDaten.Player pl) {
-            boolean hatBild = pl != null && !pl.picture.isEmpty() && pl.picture.equals(coverUrl) && coverWeich != null && !coverWeich.isRecycled();
+            boolean hatBild = pl != null && !pl.picture.isEmpty() && coverWeich != null && !coverWeich.isRecycled();
             if (hatBild) {
-                drawBitmapCenterCrop(c, coverWeich, -40f, -40f, W + 80f, H + 80f, 165);
+                drawBitmapCenterCrop(c, coverWeich, -60f, -60f, W + 120f, H + 120f, 255, bgPaint);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(0x66000000);
-                c.drawRect(0, 0, W, H, p);
                 p.setShader(scrimGrad);
                 c.drawRect(0, 0, W, H, p);
                 p.setShader(null);
@@ -475,31 +581,31 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneKopf(Canvas c, MusikDaten.Player pl) {
-            // Back circle (58, 50), 52px diameter
+            // Back circle (56, 48), 52px diameter matching 22px top, 30px left
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x1FFFFFFF);
-            c.drawCircle(58f, 50f, 26f, p);
-            drawIcon(c, "mdi:chevron-down", 42f, 34f, 32f, TXT);
-            hits.add(new Hit("zurueck", "", 24f, 16f, 92f, 84f));
+            c.drawCircle(56f, 48f, 26f, p);
+            drawIcon(c, "mdi:chevron-down", 40f, 32f, 32f, TXT);
+            hits.add(new Hit("zurueck", "", 22f, 14f, 90f, 82f));
 
             float rx = W - 30f;
-            float cy = 50f;
+            float cy = 48f;
 
             // Device button (rightmost)
             String devName = pl != null ? pl.name : "Kein Gerät";
             String devIcon = pl != null ? pl.icon : "mdi:speaker";
             tPaint.setTypeface(tfMed);
             tPaint.setTextSize(15f);
-            float nameW = Math.min(200f, tPaint.measureText(devName));
-            float devW = 14f + 24f + 10f + nameW + 10f + 22f + 16f;
+            float nameW = Math.min(280f, tPaint.measureText(devName));
+            float devW = 14f + 26f + 10f + nameW + 10f + 22f + 18f;
             float devL = rx - devW;
-            p.setColor("dev".equals(offenPopover) ? 0x47FFFFFF : 0x1FFFFFFF);
+            p.setColor(0x1FFFFFFF);
             rf.set(devL, cy - 26f, rx, cy + 26f);
             c.drawRoundRect(rf, 26f, 26f, p);
-            drawIcon(c, devIcon, devL + 14f, cy - 12f, 24f, TXT);
+            drawIcon(c, devIcon, devL + 14f, cy - 13f, 26f, TXT);
             tPaint.setColor(TXT);
-            c.drawText(kuerzen(tPaint, devName, 200f), devL + 48f, cy + 5.5f, tPaint);
-            drawIcon(c, "dev".equals(offenPopover) ? "mdi:chevron-up" : "mdi:chevron-down", rx - 36f, cy - 11f, 22f, TXT);
+            c.drawText(kuerzen(tPaint, devName, 280f), devL + 50f, cy + 5.5f, tPaint);
+            drawIcon(c, "dev".equals(offenPopover) ? "mdi:chevron-up" : "mdi:chevron-down", rx - 40f, cy - 11f, 22f, TXT);
             hits.add(new Hit("pop_dev", "", devL, cy - 26f, rx, cy + 26f));
 
             // Group button with count badge
@@ -518,11 +624,11 @@ final class MusikPlayerView extends FrameLayout {
             tPaint.setTextSize(12f);
             float bw = Math.max(20f, tPaint.measureText(badge) + 10f);
             p.setColor(TXT);
-            rf.set(rx - bw + 2f, cy - 24f, rx + 2f, cy - 4f);
+            rf.set(rx - 4f - bw, cy - 22f, rx - 4f, cy - 2f);
             c.drawRoundRect(rf, 10f, 10f, p);
             tPaint.setColor(0xFF17151F);
             tPaint.setTextAlign(Paint.Align.CENTER);
-            c.drawText(badge, rf.centerX(), cy - 10f, tPaint);
+            c.drawText(badge, rf.centerX(), cy - 8f, tPaint);
             tPaint.setTextAlign(Paint.Align.LEFT);
             hits.add(new Hit("pop_grp", "", grpL, cy - 26f, rx, cy + 26f));
 
@@ -550,11 +656,11 @@ final class MusikPlayerView extends FrameLayout {
             drawIcon(c, "mdi:microphone-variant", lyrL + 13f, cy - 13f, 26f, lyricsAn ? 0xFF17151F : TXT);
             hits.add(new Hit("lyr", "", lyrL, cy - 26f, rx, cy + 26f));
 
-            // Inline Text-Versatz control (only visible after long-pressing Lyrics, auto-hides after 10 s)
-            if (versatzSichtbar && lyricsAn && pl != null && pl.istLive()) {
+            // Inline Text-Versatz control (only visible after long-pressing Lyrics / while helper is on)
+            if (versatzSichtbar && lyricsAn) {
                 double lead = daten.vorlaufFuer(pl);
                 String leadTxt = (lead > 0 ? "+" : "") + String.format(Locale.GERMAN, "%.2f", lead) + " s";
-                float ctrlR = lyrL - 14f;
+                float ctrlR = lyrL - 22f;
                 // [ + ] button (44 px)
                 float plusL = ctrlR - 44f;
                 p.setColor(0x1FFFFFFF);
@@ -571,14 +677,11 @@ final class MusikPlayerView extends FrameLayout {
                 tPaint.setTextSize(12f);
                 tPaint.setColor(0x99FFFFFF);
                 c.drawText("Text-Versatz", txtCx, cy - 4f, tPaint);
-                tPaint.setTypeface(tfBold);
+                tPaint.setTypeface(tfMed);
                 tPaint.setTextSize(17f);
                 tPaint.setColor(TXT);
                 c.drawText(leadTxt, txtCx, cy + 15f, tPaint);
                 tPaint.setTextAlign(Paint.Align.LEFT);
-                if (Math.abs(lead) > 0.01) {
-                    hits.add(new Hit("lead_0", "", txtL, cy - 24f, txtR, cy + 24f));
-                }
 
                 // [ - ] button (44 px)
                 float minusR = txtL - 4f;
@@ -591,41 +694,42 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneCover(Canvas c, MusikDaten.Player pl, boolean lyrikModus) {
-            float sz = lyrikModus ? 224f : 330f;
+            float sz = 330f;
             float cx = 30f;
-            float cy = lyrikModus ? 104f : 132f;
-            float rad = lyrikModus ? 18f : 22f;
+            float cy = lyrikModus ? 92f : 159f;
+            float rad = 22f;
 
             // Soft drop shadow (matching CSS box-shadow: 0 18px 50px rgba(0,0,0,.5))
-            drawSoftShadow(c, cx, cy, sz, sz, rad, lyrikModus ? 10f : 14f, lyrikModus ? 20f : 28f, 0.48f);
+            drawSoftShadow(c, cx, cy, sz, sz, rad, 14f, 28f, 0.48f);
 
-            boolean hatBild = pl != null && !pl.picture.isEmpty() && pl.picture.equals(coverUrl) && coverScharf != null && !coverScharf.isRecycled();
+            boolean hatBild = pl != null && !pl.picture.isEmpty() && coverScharf != null && !coverScharf.isRecycled();
             c.save();
             clipP.reset();
             rf.set(cx, cy, cx + sz, cy + sz);
             clipP.addRoundRect(rf, rad, rad, Path.Direction.CW);
             c.clipPath(clipP);
             if (hatBild) {
-                drawBitmapCenterCrop(c, coverScharf, cx, cy, sz, sz, 255);
+                drawBitmapCenterCrop(c, coverScharf, cx, cy, sz, sz, 255, bPaint);
             } else {
                 p.setColor(0x14FFFFFF);
                 c.drawRect(rf, p);
-                float isz = lyrikModus ? 68f : 96f;
-                drawIcon(c, "mdi:music-note", cx + (sz - isz) * 0.5f, cy + (sz - isz) * 0.5f, isz, 0x80FFFFFF);
+                drawIcon(c, "mdi:music-note", cx + (sz - 96f) * 0.5f, cy + (sz - 96f) * 0.5f, 96f, 0x80FFFFFF);
             }
             c.restore();
 
             if (lyrikModus && pl != null) {
-                float ty = cy + sz + 22f;
-                tPaint.setTypeface(tfMed);
-                tPaint.setTextSize(22f);
-                tPaint.setColor(TXT);
-                ty = drawWrapped(c, pl.title.isEmpty() ? "Keine Musik" : pl.title, tPaint, cx, ty, sz, 27f, 2);
+                float ty = cy + sz + 18f;
+                if (!pl.title.isEmpty()) {
+                    tPaint.setTypeface(tfBold);
+                    tPaint.setTextSize(24f);
+                    tPaint.setColor(TXT);
+                    c.drawText(kuerzen(tPaint, pl.title, sz), cx, ty + 22f, tPaint);
+                }
                 if (!pl.artist.isEmpty()) {
                     tPaint.setTypeface(tfNorm);
-                    tPaint.setTextSize(16.5f);
-                    tPaint.setColor(SUB);
-                    c.drawText(kuerzen(tPaint, MusikDaten.formatArtist(pl.artist), sz), cx, ty + 22f, tPaint);
+                    tPaint.setTextSize(18f);
+                    tPaint.setColor(0xBFFFFFFF);
+                    c.drawText(kuerzen(tPaint, MusikDaten.formatArtist(pl.artist), sz), cx, ty + 48f, tPaint);
                 }
             }
         }
@@ -636,14 +740,14 @@ final class MusikPlayerView extends FrameLayout {
             String artist = on ? MusikDaten.formatArtist(pl.artist) : "";
             String album = on ? pl.album : "";
 
-            // Align near bottom of meta area (above seekbar)
-            float bottomY = y + h - 18f;
+            // Align near bottom of meta area (above seekbar, padding-bottom 10px -> bottomY ~ 400)
+            float bottomY = y + h - 4f;
             if (!album.isEmpty()) {
                 tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(16f);
                 tPaint.setColor(0x8CFFFFFF);
                 c.drawText(kuerzen(tPaint, album, w), x, bottomY, tPaint);
-                bottomY -= 26f;
+                bottomY -= 24f;
             }
             if (!artist.isEmpty()) {
                 tPaint.setTypeface(tfNorm);
@@ -656,7 +760,7 @@ final class MusikPlayerView extends FrameLayout {
             tPaint.setTextSize(34f);
             tPaint.setColor(TXT);
             List<String> tLines = wrapLines(title, tPaint, w, 2);
-            float lineH = 40f;
+            float lineH = 39f;
             float startY = bottomY - (tLines.size() - 1) * lineH;
             for (int i = 0; i < tLines.size(); i++) {
                 c.drawText(tLines.get(i), x, startY + i * lineH, tPaint);
@@ -664,78 +768,72 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneLiedtext(Canvas c, MusikDaten.Player pl, float x, float y, float w, float h, long nowMs) {
-            c.save();
+            int save = c.saveLayer(x, y, x + w, y + h, null);
             c.clipRect(x, y, x + w, y + h);
             if (lyricsLaden || liedtext == null) {
-                tPaint.setTypeface(tfMed);
-                tPaint.setTextSize(25f);
+                tPaint.setTypeface(tfBold);
+                tPaint.setTextSize(27f);
                 tPaint.setColor(TXT);
-                c.drawText("Liedtext wird geladen …", x, y + h * 0.42f, tPaint);
-                c.restore();
-                return;
-            }
-            if (liedtext.lines.isEmpty()) {
-                tPaint.setTypeface(tfMed);
-                tPaint.setTextSize(25f);
+                c.drawText("Liedtext wird geladen …", x, y + h * 0.35f + 10f, tPaint);
+            } else if (liedtext.lines.isEmpty()) {
+                tPaint.setTypeface(tfBold);
+                tPaint.setTextSize(27f);
                 tPaint.setColor(TXT);
-                c.drawText("Kein Liedtext gefunden", x, y + h * 0.42f, tPaint);
-                c.restore();
-                return;
-            }
-
-            rebuildLyricLayout(w);
-            double pos = ziehendSeek ? seekDragPos : pl.aktuellePosition(nowMs);
-            double lead = daten.vorlaufFuer(pl);
-            int idx = -1;
-            if (liedtext.synced) {
-                for (int i = 0; i < liedtext.lines.size(); i++) {
-                    if (liedtext.lines.get(i).t <= pos + lead) idx = i;
-                    else break;
+                c.drawText("Kein Liedtext gefunden", x, y + h * 0.35f + 10f, tPaint);
+            } else {
+                rebuildLyricLayout(w);
+                double pos = ziehendSeek ? seekDragPos : (nowMs < seekLockUntilMs ? seekLockedPos : pl.aktuellePosition(nowMs));
+                double lead = daten.vorlaufFuer(pl);
+                int idx = -1;
+                if (liedtext.synced) {
+                    for (int i = 0; i < liedtext.lines.size(); i++) {
+                        if (liedtext.lines.get(i).t <= pos + lead) idx = i;
+                        else break;
+                    }
+                    if (idx != aktivLyrikIdx) {
+                        aktualisiereLyrikZiel(idx, h, nowMs);
+                        schleife();
+                    }
                 }
-                if (idx != aktivLyrikIdx) {
-                    aktivLyrikIdx = idx;
-                    int targetI = Math.max(0, idx);
-                    if (targetI < lyrikLayout.size()) {
-                        LyrikLayoutZeile lz = lyrikLayout.get(targetI);
-                        float center = lz.topY + lz.height * 0.5f;
-                        lyricsTargetY = Math.max(0f, center - h * 0.36f);
-                        if (aktivLyrikIdx == -2 || Math.abs(lyricsTargetY - lyricsScrollY) > h * 1.5f) {
-                            lyricsScrollY = lyricsTargetY;
-                        }
+
+                float sy = liedtext.synced ? lyricsScrollY : Math.max(0f, Math.min(lyricsMaxScroll, lyricsScrollY));
+                float lineH = 34.5f;
+                float colorT = colorAnimStartMs > 0L ? Math.max(0f, Math.min(1f, (nowMs - colorAnimStartMs) / 350f)) : 1f;
+                for (LyrikLayoutZeile lz : lyrikLayout) {
+                    float ry = y + lz.topY - sy;
+                    if (ry + lz.height < y || ry > y + h) continue;
+
+                    int newCol;
+                    if (!liedtext.synced) newCol = 0x61FFFFFF;
+                    else if (lz.index == idx) newCol = 0xFFFFFFFF;
+                    else if (lz.index < idx) newCol = 0x8CFFFFFF;
+                    else newCol = 0x61FFFFFF;
+
+                    int drawCol = newCol;
+                    if (liedtext.synced && colorT < 1f && prevAktivLyrikIdx != -2) {
+                        int oldCol = lz.index == prevAktivLyrikIdx ? 0xFFFFFFFF : (lz.index < prevAktivLyrikIdx ? 0x8CFFFFFF : 0x61FFFFFF);
+                        drawCol = WetterLage.mix(oldCol, newCol, colorT);
+                    }
+
+                    tPaint.setTypeface(tfBold);
+                    tPaint.setTextSize(27f);
+                    tPaint.setColor(drawCol);
+                    for (int k = 0; k < lz.zeilen.size(); k++) {
+                        c.drawText(lz.zeilen.get(k), x, ry + 28f + k * lineH, tPaint);
                     }
                 }
             }
 
-            float sy = liedtext.synced ? lyricsScrollY : Math.max(0f, Math.min(lyricsMaxScroll, lyricsScrollY));
-            float lineH = 34f;
-            for (LyrikLayoutZeile lz : lyrikLayout) {
-                float ry = y + lz.topY - sy + (liedtext.synced ? 0f : 12f);
-                if (ry + lz.height < y || ry > y + h) continue;
-
-                // Edge alpha fade (top 12%, bottom 18%)
-                float midY = ry + lz.height * 0.5f;
-                float edgeFade = 1f;
-                if (midY < y + h * 0.14f) edgeFade = Math.max(0.15f, (midY - y) / (h * 0.14f));
-                else if (midY > y + h * 0.80f) edgeFade = Math.max(0.15f, (y + h - midY) / (h * 0.20f));
-
-                int baseCol;
-                if (!liedtext.synced) baseCol = 0xD9FFFFFF;
-                else if (lz.index == idx) baseCol = 0xFFFFFFFF;
-                else if (lz.index < idx) baseCol = 0x8CFFFFFF;
-                else baseCol = 0x61FFFFFF;
-
-                int alpha = Math.round(((baseCol >>> 24) & 0xFF) * edgeFade);
-                tPaint.setTypeface(lz.index == idx || !liedtext.synced ? tfBold : tfMed);
-                tPaint.setTextSize(26f);
-                tPaint.setColor((alpha << 24) | (baseCol & 0x00FFFFFF));
-                for (int k = 0; k < lz.zeilen.size(); k++) {
-                    c.drawText(lz.zeilen.get(k), x, ry + 26f + k * lineH, tPaint);
-                }
-                if (liedtext.synced && lz.t >= 0) {
-                    hits.add(new Hit("seek_line", String.valueOf(lz.t), x, Math.max(y, ry), x + w, Math.min(y + h, ry + lz.height)));
-                }
+            // Pixel-level vertical mask matching -webkit-mask-image: linear-gradient(transparent 0,#000 12%,#000 82%,transparent 100%)
+            if (maskY != y || maskH != h) {
+                maskY = y;
+                maskH = h;
+                maskPaint.setShader(new LinearGradient(0f, y, 0f, y + h,
+                    new int[] {0x00000000, 0xFF000000, 0xFF000000, 0x00000000},
+                    new float[] {0f, 0.12f, 0.82f, 1f}, Shader.TileMode.CLAMP));
             }
-            c.restore();
+            c.drawRect(x, y, x + w, y + h, maskPaint);
+            c.restoreToCount(save);
         }
 
         private void rebuildLyricLayout(float maxW) {
@@ -745,24 +843,25 @@ final class MusikPlayerView extends FrameLayout {
             lyrikLayout.clear();
             if (liedtext == null) { lyricsMaxScroll = 0f; return; }
             tPaint.setTypeface(tfBold);
-            tPaint.setTextSize(26f);
-            float y = 0f, lineH = 34f, pad = 10f;
+            tPaint.setTextSize(27f);
+            float y = 0f, lineH = 34.5f, pad = 10f;
             for (int i = 0; i < liedtext.lines.size(); i++) {
                 MusikDaten.Liedzeile lz = liedtext.lines.get(i);
                 String txt = lz.s.trim().isEmpty() ? "♪" : lz.s.trim();
-                List<String> wrapped = wrapLines(txt, tPaint, maxW - 12f, 4);
+                List<String> wrapped = wrapLines(txt, tPaint, maxW, 20);
                 float h = wrapped.size() * lineH + pad;
                 lyrikLayout.add(new LyrikLayoutZeile(i, lz.t, wrapped, y, h));
                 y += h;
             }
-            lyricsMaxScroll = Math.max(0f, y - 240f);
+            lyricsMaxScroll = Math.max(0f, y - 312f);
         }
 
         private void zeichneSeekbar(Canvas c, MusikDaten.Player pl, float x, float y, float w, long nowMs) {
             if (pl == null || pl.duration <= 0) return;
-            double pos = ziehendSeek ? seekDragPos : pl.aktuellePosition(nowMs);
+            double pos = ziehendSeek ? seekDragPos : (nowMs < seekLockUntilMs ? seekLockedPos : pl.aktuellePosition(nowMs));
             float frac = (float) Math.max(0.0, Math.min(1.0, pos / pl.duration));
 
+            tPaint.setFontFeatureSettings("tnum");
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(14f);
             tPaint.setColor(0xBFFFFFFF);
@@ -771,6 +870,7 @@ final class MusikPlayerView extends FrameLayout {
             tPaint.setTextAlign(Paint.Align.RIGHT);
             c.drawText(MusikDaten.fmtZeit(pl.duration), x + w, y + 19f, tPaint);
             tPaint.setTextAlign(Paint.Align.LEFT);
+            tPaint.setFontFeatureSettings(null);
 
             float barL = x + 56f, barR = x + w - 56f, barW = Math.max(20f, barR - barL);
             float cy = y + 14f;
@@ -784,8 +884,10 @@ final class MusikPlayerView extends FrameLayout {
             rf.set(barL, cy - 3f, thumbX, cy + 3f);
             c.drawRoundRect(rf, 3f, 3f, p);
 
-            p.setColor(0x66000000);
-            c.drawCircle(thumbX, cy + 2f, 11f, p);
+            p.setColor(0x18000000);
+            c.drawCircle(thumbX, cy + 2f, 14f, p);
+            p.setColor(0x24000000);
+            c.drawCircle(thumbX, cy + 2f, 12.2f, p);
             p.setColor(TXT);
             c.drawCircle(thumbX, cy, 11f, p);
 
@@ -799,7 +901,7 @@ final class MusikPlayerView extends FrameLayout {
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x1FFFFFFF);
             c.drawCircle(x + 32f, cy, 32f, p);
-            drawIcon(c, "mdi:skip-previous", x + 17f, cy - 15f, 30f, TXT);
+            drawIcon(c, "mdi:skip-previous", x + 17.5f, cy - 14.5f, 29f, TXT);
             hits.add(new Hit("prev", "", x, cy - 32f, x + 64f, cy + 32f));
 
             // Play / Pause (80, accent)
@@ -807,17 +909,17 @@ final class MusikPlayerView extends FrameLayout {
             p.setColor(ACC);
             c.drawCircle(px + 40f, cy, 40f, p);
             boolean playing = pl != null && "playing".equals(pl.state);
-            drawIcon(c, playing ? "mdi:pause" : "mdi:play", px + 21f, cy - 19f, 38f, 0xFF17151F);
+            drawIcon(c, playing ? "mdi:pause" : "mdi:play", px + 22f, cy - 18f, 36f, 0xFF17151F);
             hits.add(new Hit("play", "", px, cy - 40f, px + 80f, cy + 40f));
 
             // Next (64)
             float nx = px + 80f + 12f;
             p.setColor(0x1FFFFFFF);
             c.drawCircle(nx + 32f, cy, 32f, p);
-            drawIcon(c, "mdi:skip-next", nx + 17f, cy - 15f, 30f, TXT);
+            drawIcon(c, "mdi:skip-next", nx + 17.5f, cy - 14.5f, 29f, TXT);
             hits.add(new Hit("next", "", nx, cy - 32f, nx + 64f, cy + 32f));
 
-            // Volume right side: [ - ] [ 65% ] [ + ]
+            // Volume right side: [ - ] 12px [ 50px ] 12px [ + ] = 74px between buttons
             float rx = x + w;
             float vpL = rx - 48f;
             p.setColor(0x1FFFFFFF);
@@ -826,14 +928,16 @@ final class MusikPlayerView extends FrameLayout {
             hits.add(new Hit("vol_p", "", vpL, cy - 26f, rx, cy + 26f));
 
             String volTxt = (pl != null && pl.volume != null) ? Math.round(pl.volume * 100.0) + "%" : "–";
+            tPaint.setFontFeatureSettings("tnum");
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(15f);
             tPaint.setColor(0xD9FFFFFF);
             tPaint.setTextAlign(Paint.Align.CENTER);
-            c.drawText(volTxt, vpL - 31f, cy + 5.5f, tPaint);
+            c.drawText(volTxt, vpL - 37f, cy + 5.5f, tPaint);
             tPaint.setTextAlign(Paint.Align.LEFT);
+            tPaint.setFontFeatureSettings(null);
 
-            float vmL = vpL - 62f - 48f;
+            float vmL = vpL - 74f - 48f;
             p.setColor(0x1FFFFFFF);
             c.drawCircle(vmL + 24f, cy, 24f, p);
             drawIcon(c, "mdi:volume-minus", vmL + 13f, cy - 11f, 22f, TXT);
@@ -841,24 +945,27 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneGeraetePopover(Canvas c, MusikDaten.Player aktiv) {
-            float pw = 360f, px = W - 30f - pw, py = 86f;
-            float rowH = 64f, headH = 46f;
-            float ph = Math.min(452f, headH + Math.max(1, daten.players.size()) * rowH + 14f);
+            float pw = 360f, px = W - 30f - pw, py = 88f;
+            float rowH = 64f, headH = 44f;
+            int cnt = Math.min(8, daten.players.size());
+            float ph = Math.min(452f, headH + Math.max(1, cnt) * rowH + 8f);
             drawPopoverShell(c, px, py, pw, ph);
 
-            tPaint.setTypeface(tfMed);
+            c.save();
+            c.clipRect(px, py + 4f, px + pw, py + ph - 4f);
+            float listH = headH + cnt * rowH;
+            popoverMaxScroll = Math.max(0f, listH - (ph - 12f));
+            float sy = Math.min(popoverScrollY, popoverMaxScroll);
+            float y = py + 12f - sy;
+
+            tPaint.setTypeface(tfBold);
             tPaint.setTextSize(17f);
             tPaint.setColor(0xFFECEBE8);
-            c.drawText("Wiedergabegeräte", px + 20f, py + 32f, tPaint);
+            c.drawText("Wiedergabegeräte", px + 22f, y + 22f, tPaint);
+            y += headH - 8f;
 
-            c.save();
-            c.clipRect(px, py + headH, px + pw, py + ph - 8f);
-            float listH = daten.players.size() * rowH;
-            popoverMaxScroll = Math.max(0f, listH - (ph - headH - 12f));
-            float sy = Math.min(popoverScrollY, popoverMaxScroll);
-            float y = py + headH - sy;
-
-            for (MusikDaten.Player pItem : daten.players) {
+            for (int i = 0; i < cnt; i++) {
+                MusikDaten.Player pItem = daten.players.get(i);
                 boolean isSel = aktiv != null && pItem.entityId.equals(aktiv.entityId);
                 boolean inG = !isSel && aktiv != null && aktiv.groupMembers.contains(pItem.entityId);
                 boolean off = "unavailable".equals(pItem.state);
@@ -866,43 +973,44 @@ final class MusikPlayerView extends FrameLayout {
                 if (isSel) {
                     p.setStyle(Paint.Style.FILL);
                     p.setColor(0xFF332C55);
-                    rf.set(px + 8f, y + 2f, px + pw - 8f, y + rowH - 2f);
+                    rf.set(px + 8f, y, px + pw - 8f, y + 60f);
                     c.drawRoundRect(rf, 16f, 16f, p);
                 }
 
                 int nc = isSel ? ACC : (off ? 0x73ECEBE8 : 0xFFECEBE8);
                 int lc = isSel ? ACC : (off ? 0x738C9094 : 0xFF8C9094);
-                drawIcon(c, pItem.icon, px + 20f, y + 19f, 26f, nc);
+                drawIcon(c, pItem.icon, px + 24f, y + 17f, 26f, nc);
 
-                float rightW = isSel ? 34f : (inG ? 76f : 12f);
-                float txtW = pw - 60f - rightW;
+                float rightW = isSel ? 46f : (inG ? 92f : 22f);
+                float txtW = pw - 66f - rightW;
                 tPaint.setTypeface(tfMed);
                 tPaint.setTextSize(16f);
                 tPaint.setColor(nc);
-                c.drawText(kuerzen(tPaint, pItem.name, txtW), px + 58f, y + 27f, tPaint);
+                c.drawText(kuerzen(tPaint, pItem.name, txtW), px + 66f, y + 25f, tPaint);
 
                 tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(13f);
                 tPaint.setColor(lc);
-                c.drawText(kuerzen(tPaint, playerStatusLabel(pItem), txtW), px + 58f, y + 46f, tPaint);
+                c.drawText(kuerzen(tPaint, playerStatusLabel(pItem), txtW), px + 66f, y + 44f, tPaint);
 
                 if (isSel) {
-                    drawIcon(c, "mdi:check-circle", px + pw - 42f, y + 20f, 24f, ACC);
+                    drawIcon(c, "mdi:check-circle", px + pw - 46f, y + 18f, 24f, ACC);
                 } else if (inG) {
-                    lPaint.setColor(ACC);
-                    lPaint.setStrokeWidth(1.2f);
-                    rf.set(px + pw - 82f, y + 20f, px + pw - 16f, y + 42f);
-                    c.drawRoundRect(rf, 10f, 10f, lPaint);
                     tPaint.setTypeface(tfNorm);
                     tPaint.setTextSize(12f);
-                    tPaint.setColor(ACC);
+                    float pillW = tPaint.measureText("in Gruppe") + 16f;
+                    lPaint.setColor(WetterLage.alpha(ACC, off ? 0.45f : 1f));
+                    lPaint.setStrokeWidth(1f);
+                    rf.set(px + pw - 22f - pillW, y + 19f, px + pw - 22f, y + 41f);
+                    c.drawRoundRect(rf, 10f, 10f, lPaint);
+                    tPaint.setColor(WetterLage.alpha(ACC, off ? 0.45f : 1f));
                     tPaint.setTextAlign(Paint.Align.CENTER);
-                    c.drawText("in Gruppe", rf.centerX(), y + 35f, tPaint);
+                    c.drawText("in Gruppe", rf.centerX(), y + 34f, tPaint);
                     tPaint.setTextAlign(Paint.Align.LEFT);
                 }
 
-                if (y + rowH > py + headH && y < py + ph) {
-                    hits.add(new Hit("pick_dev", pItem.entityId, px + 8f, Math.max(py + headH, y), px + pw - 8f, Math.min(py + ph, y + rowH)));
+                if (y + 60f > py && y < py + ph) {
+                    hits.add(new Hit("pick_dev", pItem.entityId, px + 8f, Math.max(py, y), px + pw - 8f, Math.min(py + ph, y + 60f)));
                 }
                 y += rowH;
             }
@@ -910,10 +1018,12 @@ final class MusikPlayerView extends FrameLayout {
         }
 
         private void zeichneGruppenPopover(Canvas c, MusikDaten.Player aktiv) {
-            float pw = 360f, px = W - 30f - pw, py = 86f;
-            float headH = 64f, rowH = 60f;
+            float pw = 360f, px = W - 30f - pw, py = 88f;
+            float headH = 62f, rowH = 64f;
             List<MusikDaten.Player> inG = new ArrayList<>(), outG = new ArrayList<>();
-            for (MusikDaten.Player item : daten.players) {
+            int lim = Math.min(8, daten.players.size());
+            for (int i = 0; i < lim; i++) {
+                MusikDaten.Player item = daten.players.get(i);
                 boolean isLeader = aktiv != null && item.entityId.equals(aktiv.entityId);
                 boolean member = isLeader || (aktiv != null && aktiv.groupMembers.contains(item.entityId));
                 if (member) inG.add(item);
@@ -923,41 +1033,47 @@ final class MusikPlayerView extends FrameLayout {
             float ph = Math.min(452f, headH + contentH + 12f);
             drawPopoverShell(c, px, py, pw, ph);
 
-            tPaint.setTypeface(tfMed);
+            c.save();
+            c.clipRect(px, py + 4f, px + pw, py + ph - 6f);
+            popoverMaxScroll = Math.max(0f, headH + contentH - (ph - 12f));
+            float sy = Math.min(popoverScrollY, popoverMaxScroll);
+            float y = py + 12f - sy;
+
+            tPaint.setTypeface(tfBold);
             tPaint.setTextSize(17f);
             tPaint.setColor(0xFFECEBE8);
-            c.drawText("Gruppenmitglieder", px + 20f, py + 28f, tPaint);
+            c.drawText("Gruppenmitglieder", px + 22f, y + 20f, tPaint);
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(13f);
             tPaint.setColor(0xFF8C9094);
-            c.drawText(kuerzen(tPaint, aktiv != null ? aktiv.name : "", pw - 40f), px + 20f, py + 48f, tPaint);
+            c.drawText(kuerzen(tPaint, aktiv != null ? aktiv.name : "", pw - 44f), px + 22f, y + 39f, tPaint);
             p.setStyle(Paint.Style.FILL);
             p.setColor(0xFF30353A);
-            c.drawRect(px + 12f, py + headH - 2f, px + pw - 12f, py + headH - 1f, p);
+            c.drawRect(px + 8f, y + 50f, px + pw - 8f, y + 51f, p);
+            y += headH;
 
-            c.save();
-            c.clipRect(px, py + headH, px + pw, py + ph - 8f);
-            popoverMaxScroll = Math.max(0f, contentH - (ph - headH - 12f));
-            float sy = Math.min(popoverScrollY, popoverMaxScroll);
-            float y = py + headH - sy;
-
-            tPaint.setTypeface(tfMed);
+            tPaint.setFontFeatureSettings(null);
+            tPaint.setLetterSpacing(0.04f);
+            tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(12f);
             tPaint.setColor(0xFF8C9094);
-            c.drawText("IN GRUPPE", px + 20f, y + 18f, tPaint);
+            c.drawText("IN GRUPPE", px + 22f, y + 16f, tPaint);
+            tPaint.setLetterSpacing(0f);
             y += 26f;
             for (MusikDaten.Player item : inG) {
-                zeichneGruppenZeile(c, aktiv, item, true, px, py + headH, pw, py + ph, y, rowH);
+                zeichneGruppenZeile(c, aktiv, item, true, px, py + 4f, pw, py + ph - 6f, y, 60f);
                 y += rowH;
             }
             if (!outG.isEmpty()) {
-                tPaint.setTypeface(tfMed);
+                tPaint.setLetterSpacing(0.04f);
+                tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(12f);
                 tPaint.setColor(0xFF8C9094);
-                c.drawText("WEITERE GERÄTE", px + 20f, y + 22f, tPaint);
+                c.drawText("WEITERE GERÄTE", px + 22f, y + 20f, tPaint);
+                tPaint.setLetterSpacing(0f);
                 y += 30f;
                 for (MusikDaten.Player item : outG) {
-                    zeichneGruppenZeile(c, aktiv, item, false, px, py + headH, pw, py + ph, y, rowH);
+                    zeichneGruppenZeile(c, aktiv, item, false, px, py + 4f, pw, py + ph - 6f, y, 60f);
                     y += rowH;
                 }
             }
@@ -972,30 +1088,30 @@ final class MusikPlayerView extends FrameLayout {
 
             if (inGroup) {
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(0x24A99CF0);
-                rf.set(px + 8f, y + 2f, px + pw - 8f, y + rowH - 2f);
+                p.setColor((Math.round(0x24 * alpha) << 24) | 0x00A99CF0);
+                rf.set(px + 8f, y, px + pw - 8f, y + rowH);
                 c.drawRoundRect(rf, 16f, 16f, p);
             }
             int nc = WetterLage.alpha(0xFFECEBE8, alpha);
             int lc = WetterLage.alpha(0xFF8C9094, alpha);
-            drawIcon(c, item.icon, px + 20f, y + 17f, 26f, nc);
+            drawIcon(c, item.icon, px + 24f, y + 17f, 26f, nc);
 
-            float txtW = pw - 108f;
+            float txtW = pw - 116f;
             tPaint.setTypeface(tfMed);
             tPaint.setTextSize(16f);
             tPaint.setColor(nc);
-            c.drawText(kuerzen(tPaint, item.name, txtW), px + 58f, y + 25f, tPaint);
+            c.drawText(kuerzen(tPaint, item.name, txtW), px + 66f, y + 25f, tPaint);
 
             String sub = "unavailable".equals(item.state) ? "Offline"
                 : (isLeader ? "Ausgewähltes Gerät" : (inGroup ? "Spielt mit" : (!item.canGroup ? "Kann nicht gruppiert werden" : stateLabel(item.state))));
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(13f);
             tPaint.setColor(lc);
-            c.drawText(kuerzen(tPaint, sub, txtW), px + 58f, y + 44f, tPaint);
+            c.drawText(kuerzen(tPaint, sub, txtW), px + 66f, y + 44f, tPaint);
 
             // Checkbox icon
             int cc = WetterLage.alpha(inGroup ? ACC : 0xFFECEBE8, isLeader ? 0.5f : alpha);
-            drawIcon(c, inGroup ? "mdi:checkbox-marked" : "mdi:checkbox-blank-outline", px + pw - 44f, y + 16f, 28f, cc);
+            drawIcon(c, inGroup ? "mdi:checkbox-marked" : "mdi:checkbox-blank-outline", px + pw - 50f, y + 16f, 28f, cc);
 
             if (canGroup && y + rowH > clipT && y < clipB) {
                 hits.add(new Hit("pick_grp", item.entityId, px + 8f, Math.max(clipT, y), px + pw - 8f, Math.min(clipB, y + rowH)));
@@ -1031,7 +1147,7 @@ final class MusikPlayerView extends FrameLayout {
             rf.set(x, y, x + w, y + h);
             c.drawRoundRect(rf, 22f, 22f, p);
             lPaint.setColor(0xFF30353A);
-            lPaint.setStrokeWidth(1.2f);
+            lPaint.setStrokeWidth(1f);
             c.drawRoundRect(rf, 22f, 22f, lPaint);
         }
 
@@ -1188,6 +1304,9 @@ final class MusikPlayerView extends FrameLayout {
                     break;
                 case "play":
                     if (pl != null) {
+                        long now = System.currentTimeMillis();
+                        pl.position = pl.aktuellePosition(now);
+                        pl.updatedAtMs = now;
                         pl.state = "playing".equals(pl.state) ? "paused" : "playing";
                         callService("media_player", "media_play_pause", pl.entityId, null);
                         schleife();
@@ -1219,11 +1338,6 @@ final class MusikPlayerView extends FrameLayout {
                         invalidate();
                     }
                     break;
-                case "seek_line":
-                    try {
-                        seekTo(pl, Double.parseDouble(h.arg));
-                    } catch (NumberFormatException ignored) {}
-                    break;
                 case "pick_dev":
                     verschiebeZu(h.arg);
                     break;
@@ -1231,18 +1345,15 @@ final class MusikPlayerView extends FrameLayout {
                     gruppeUmschalten(h.arg);
                     break;
                 case "lead_m":
-                    versatzAendern(-0.25, false);
+                    versatzAendern(-0.25);
                     break;
                 case "lead_p":
-                    versatzAendern(0.25, false);
-                    break;
-                case "lead_0":
-                    versatzAendern(0.0, true);
+                    versatzAendern(0.25);
                     break;
             }
         }
 
-        private void drawBitmapCenterCrop(Canvas c, Bitmap bm, float x, float y, float w, float h, int alpha) {
+        private void drawBitmapCenterCrop(Canvas c, Bitmap bm, float x, float y, float w, float h, int alpha, Paint targetPaint) {
             int bw = bm.getWidth(), bh = bm.getHeight();
             if (bw <= 0 || bh <= 0) return;
             float sc = Math.max(w / bw, h / bh);
@@ -1251,9 +1362,9 @@ final class MusikPlayerView extends FrameLayout {
             int st = Math.max(0, Math.round((bh - sh) * 0.5f));
             srcR.set(sl, st, Math.min(bw, Math.round(sl + sw)), Math.min(bh, Math.round(st + sh)));
             rf.set(x, y, x + w, y + h);
-            bPaint.setAlpha(alpha);
-            c.drawBitmap(bm, srcR, rf, bPaint);
-            bPaint.setAlpha(255);
+            targetPaint.setAlpha(alpha);
+            c.drawBitmap(bm, srcR, rf, targetPaint);
+            targetPaint.setAlpha(255);
         }
 
         private void drawIcon(Canvas c, String name, float x, float y, float size, int color) {

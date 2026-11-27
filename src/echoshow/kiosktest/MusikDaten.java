@@ -119,19 +119,22 @@ final class MusikDaten {
         String selHelper = (helperEntity != null && helperEntity.trim().matches("[a-z0-9_]+\\.[a-z0-9_]{1,250}"))
             ? helperEntity.trim() : "input_text.musik_player";
         String tpl = "{%- set excl = " + ex + " -%}"
-            + "{%- set ns = namespace(l=[states('" + selHelper + "'),"
+            + "{%- set ns = namespace(l=['versatz=' ~ states('input_boolean.musik_liedtext_versatz'),"
+            + "states('" + selHelper + "'),"
             + "states('input_boolean.musik_liedtext'),"
             + "states('input_boolean.musik_autoplay'),"
             + "states('input_boolean.musik_crossfade'),"
             + "states('input_text.musik_liedtext_vorlauf_geraete'),"
-            + "states('input_text.musik_geraete')]) -%}"
+            + "states('input_text.musik_geraete'),"
+            + "states('input_text.musik_geraete_icons')]) -%}"
             + "{%- for p in states.media_player -%}"
             + "{%- if p.entity_id not in excl and p.state != 'unavailable' -%}"
             + "{%- set ns.l = ns.l + [p.entity_id ~ ':' ~ p.state ~ ':' ~ (p.attributes.media_title | default('')) ~ ':'"
             + " ~ (p.attributes.media_artist | default('')) ~ ':' ~ (p.attributes.media_album_name | default('')) ~ ':'"
             + " ~ (p.attributes.entity_picture | default(p.attributes.entity_picture_local | default(''))) ~ ':'"
             + " ~ (p.attributes.volume_level | default('')) ~ ':' ~ (p.attributes.media_position | default('')) ~ ':'"
-            + " ~ (p.attributes.media_position_updated_at | default('')) ~ ':' ~ (p.attributes.group_members | default([]) | join(','))] -%}"
+            + " ~ (p.attributes.media_duration | default('')) ~ ':' ~ (p.attributes.media_position_updated_at | default('')) ~ ':'"
+            + " ~ (p.attributes.supported_features | default('')) ~ ':' ~ (p.attributes.group_members | default([]) | join(','))] -%}"
             + "{%- endif -%}{%- endfor -%}"
             + "{{ ns.l | join('|') }}";
         Map<String, Object> msg = new LinkedHashMap<>();
@@ -182,7 +185,6 @@ final class MusikDaten {
                 p.position = numDbl(pm.get("position"), 0.0);
                 p.duration = numDbl(pm.get("duration"), 0.0);
                 p.updatedAtMs = zeit(pm.get("updated_at"));
-                if (p.updatedAtMs == 0) p.updatedAtMs = nowMs;
                 p.canGroup = Boolean.TRUE.equals(pm.get("can_group"));
                 if (pm.get("group_members") instanceof List) {
                     List<String> gms = new ArrayList<>();

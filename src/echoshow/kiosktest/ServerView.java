@@ -91,8 +91,16 @@ final class ServerView extends FrameLayout {
 
     private boolean confirmPower;
     private boolean powerBusy;
+    private boolean angehaengt;
     private float diensteScrollY, diensteMaxScroll;
     private final Runnable refreshRun = this::datenNachladen;
+    private final Runnable autoTick = new Runnable() {
+        @Override public void run() {
+            if (!angehaengt) return;
+            datenNachladen();
+            postDelayed(this, 15_000L);
+        }
+    };
 
     ServerView(Context ctx, KsTheme theme, String initTab, Aktionen aktionen) {
         super(ctx);
@@ -110,6 +118,7 @@ final class ServerView extends FrameLayout {
         if (!neu.equals(this.tab)) {
             this.tab = neu;
             diensteScrollY = 0;
+            datenNachladen();
             canvasView.invalidate();
         }
     }
@@ -179,7 +188,16 @@ final class ServerView extends FrameLayout {
         canvasView.invalidate();
     }
 
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        angehaengt = true;
+        removeCallbacks(autoTick);
+        postDelayed(autoTick, 15_000L);
+    }
+
     @Override protected void onDetachedFromWindow() {
+        angehaengt = false;
+        removeCallbacks(autoTick);
         removeCallbacks(refreshRun);
         super.onDetachedFromWindow();
     }
@@ -262,11 +280,11 @@ final class ServerView extends FrameLayout {
         if (v < 1.0) {
             String s = fmt(v, 2);
             if (s.endsWith("0")) s = s.substring(0, s.length() - 1);
-            return s + " GiB";
+            return s + " GB";
         }
         String s = fmt(v, v < 10.0 ? 1 : 0);
         if (s.endsWith(",0")) s = s.substring(0, s.length() - 2);
-        return s + " GiB";
+        return s + " GB";
     }
 
     private final class CanvasView extends View {
@@ -341,9 +359,9 @@ final class ServerView extends FrameLayout {
 
         private void zeichneKopf(Canvas c, long now) {
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x1EFFFFFF);
+            p.setColor(0x14FFFFFF);
             c.drawCircle(58, 50, 28, p);
-            drawIcon(c, "mdi:chevron-left", 45, 37, 26, TXT);
+            drawIcon(c, "mdi:chevron-left", 44, 36, 28, TXT);
             hits.add(new Hit("zurueck", 22, 14, 94, 86));
 
             t.setTextAlign(Paint.Align.LEFT);
@@ -356,7 +374,7 @@ final class ServerView extends FrameLayout {
             if (!geladen) {
                 statusTxt = fehler != null ? "Fehler: " + fehler : "Daten werden geladen …";
                 dotCol = SUB;
-            } else if (!steckdose.isEmpty() && steckdoseAn == null && !online) {
+            } else if (!steckdose.isEmpty() && steckdoseAn == null) {
                 statusTxt = "Steckdose nicht erreichbar";
                 dotCol = OFF_COL;
             } else if (Boolean.FALSE.equals(steckdoseAn)) {
@@ -387,18 +405,18 @@ final class ServerView extends FrameLayout {
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x14FFFFFF);
                 c.drawCircle(pCx, pCy, 26, p);
-                int icCol = Boolean.FALSE.equals(steckdoseAn) ? GREEN : 0xFFE88A8A;
+                int icCol = Boolean.TRUE.equals(steckdoseAn) ? 0xFFE88A8A : GREEN;
                 drawIcon(c, "mdi:power", pCx - 13, pCy - 13, 26, icCol);
                 hits.add(new Hit("power", pCx - 28, pCy - 28, pCx + 28, pCy + 28));
                 pwRight -= 66;
             }
 
             // Segmented toggle: Übersicht | VMs & Container
-            t.setTextSize(16);
+            t.setTextSize(17);
             t.setTypeface("uebersicht".equals(tab) ? tfMed : tfNorm);
-            float w1 = t.measureText("Übersicht") + 38;
+            float w1 = t.measureText("Übersicht") + 40;
             t.setTypeface("dienste".equals(tab) ? tfMed : tfNorm);
-            float w2 = t.measureText("VMs & Container") + 38;
+            float w2 = t.measureText("VMs & Container") + 40;
             float totW = w1 + w2 + 10;
             float tx0 = pwRight - totW, ty0 = 22, th = 52;
             rf.set(tx0, ty0, tx0 + totW, ty0 + th);
@@ -420,7 +438,7 @@ final class ServerView extends FrameLayout {
             }
             t.setTextAlign(Paint.Align.CENTER);
             t.setTypeface(on ? tfMed : tfNorm);
-            t.setTextSize(16);
+            t.setTextSize(17);
             t.setColor(on ? BG : SUB);
             c.drawText(lbl, rf.centerX(), y + h * .5f + 6, t);
             t.setTextAlign(Paint.Align.LEFT);
@@ -428,19 +446,19 @@ final class ServerView extends FrameLayout {
         }
 
         private void zeichneUebersicht(Canvas c, long now) {
-            float x0 = 30, y0 = 96, totalW = W - 60, gap = 26;
+            float x0 = 30, y0 = 98, totalW = W - 60, gap = 30;
             float colW = (totalW - 2 * gap) / 3f;
 
             // 1. Top 3 stat cards
             double cpuPkVal = peak(cpuSpark, cpu);
             if (cpuPeak != null && cpuPeak > cpuPkVal) cpuPkVal = cpuPeak;
             String cpuFoot = (cpuThreads != null ? fmt(cpuThreads, 0) + " Threads · " : "") + "Spitze " + fmt(cpuPkVal, 0) + " %";
-            drawStatCard(c, x0, y0, colW, "Prozessor", fmt(cpu, 0), "%",
+            drawStatCard(c, x0, y0, colW, "CPU", fmt(cpu, 0), "%",
                 cpuSpark, cpu, Math.max(30.0, cpuPkVal * 1.15), CPU_COL, cpuFoot, now);
 
             String ramFoot = (ram != null && ramMaxGb != null)
-                ? fmt(ram / 100.0 * ramMaxGb, 1) + " von " + fmt(ramMaxGb, 1) + " GiB" : "";
-            drawStatCard(c, x0 + colW + gap, y0, colW, "Arbeitsspeicher", fmt(ram, 0), "%",
+                ? fmt(ram / 100.0 * ramMaxGb, 1) + " von " + fmt(ramMaxGb, 1) + " GB" : "";
+            drawStatCard(c, x0 + colW + gap, y0, colW, "RAM", fmt(ram, 0), "%",
                 ramSpark, ram, 100.0, RAM_COL, ramFoot, now);
 
             double pwPkVal = peak(powerSpark, power);
@@ -451,15 +469,11 @@ final class ServerView extends FrameLayout {
             drawStatCard(c, x0 + 2 * (colW + gap), y0, colW, "Strom", fmt(power, 0), "W",
                 powerSpark, power, Math.max(100.0, pwPkVal * 1.15), GREEN, pwFoot, now);
 
-            // 2. Bottom row: Speicher pools (left) + VMs & Container dots (right)
+            // 2. Bottom row: Storage pools (left, no heading) + VMs & Container dots (right)
             float by = 326, leftW = (totalW - 46) * .5f, rightX = x0 + leftW + 46;
 
-            // Left: Speicher
-            t.setTypeface(tfMed); t.setTextSize(13); t.setColor(SUB);
-            c.drawText("SPEICHER", x0, by + 12, t);
-            float sy = by + 28;
-            int maxStorages = Math.min(4, storages.size());
-            for (int i = 0; i < maxStorages; i++) {
+            float sy = by;
+            for (int i = 0; i < storages.size(); i++) {
                 Storage s = storages.get(i);
                 t.setTypeface(tfNorm); t.setTextSize(15); t.setColor(TXT);
                 c.drawText(kuerzen(t, s.name, leftW * .48f), x0, sy + 14, t);
@@ -473,7 +487,7 @@ final class ServerView extends FrameLayout {
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x14FFFFFF);
                 c.drawRoundRect(rf, 4, 4, p);
-                float pct = s.pct == null ? 0f : Math.max(1f, Math.min(100f, s.pct.floatValue()));
+                float pct = Math.max(1f, Math.min(100f, s.pct == null ? 0f : s.pct.floatValue()));
                 rf.set(x0, barY, x0 + leftW * (pct / 100f), barY + 8);
                 p.setColor(DISK_COL);
                 c.drawRoundRect(rf, 4, 4, p);
@@ -493,15 +507,15 @@ final class ServerView extends FrameLayout {
             }
             t.setTypeface(tfLight); t.setTextSize(34); t.setColor(TXT);
             String runStr = String.valueOf(run);
-            c.drawText(runStr, rightX, by + 26, t);
+            c.drawText(runStr, rightX, by + 28, t);
             float runW = t.measureText(runStr);
             t.setTypeface(tfNorm); t.setTextSize(16); t.setColor(SUB);
             String subCnt = "von " + guests.size() + " laufen · " + vm + (vm == 1 ? " VM, " : " VMs, ") + (guests.size() - vm) + " Container";
-            c.drawText(kuerzen(t, subCnt, leftW - runW - 14), rightX + runW + 10, by + 25, t);
+            c.drawText(kuerzen(t, subCnt, leftW - runW - 14), rightX + runW + 10, by + 27, t);
 
-            float gx0 = rightX, gy0 = by + 44, cell = 24, dGap = 10;
+            float gx0 = rightX, gy0 = by + 52, cell = 24, dGap = 10;
             int cols = 8;
-            for (int i = 0; i < Math.min(32, guests.size()); i++) {
+            for (int i = 0; i < guests.size(); i++) {
                 Guest g = guests.get(i);
                 int r = i / cols, col = i % cols;
                 float cx = gx0 + col * (cell + dGap), cy = gy0 + r * (cell + dGap);
@@ -514,39 +528,36 @@ final class ServerView extends FrameLayout {
                     c.drawCircle(cx + cell * .5f, cy + cell * .5f, cell * .5f, p);
                 }
             }
-            int rowsUsed = Math.max(1, (Math.min(32, guests.size()) + cols - 1) / cols);
+            int rowsUsed = Math.max(1, (guests.size() + cols - 1) / cols);
             float footY = gy0 + rowsUsed * (cell + dGap) + 12;
-            String offStr = offNames.isEmpty()
-                ? (guests.isEmpty() ? "" : "alle laufen")
-                : "aus: " + join(offNames, ", ");
+            String offStr = offNames.isEmpty() ? "alle laufen" : "aus: " + join(offNames, ", ");
             t.setTypeface(tfNorm); t.setTextSize(14); t.setColor(SUB);
             c.drawText(kuerzen(t, offStr, leftW), rightX, footY, t);
-            hits.add(new Hit("tab:dienste", rightX, by, rightX + leftW, H - 20));
         }
 
         private void drawStatCard(Canvas c, float x, float y, float w, String lbl, String val, String unit,
                                   List<SparkPt> pts, Double cur, double topVal, int col, String foot, long now) {
             t.setTypeface(tfNorm); t.setTextSize(15); t.setColor(SUB);
-            c.drawText(lbl, x, y + 16, t);
+            c.drawText(lbl, x, y + 15, t);
 
-            t.setTypeface(tfLight); t.setTextSize(48); t.setColor(TXT);
+            t.setTypeface(tfLight); t.setTextSize(50); t.setColor(TXT);
             c.drawText(val, x, y + 66, t);
             float vw = t.measureText(val);
             t.setTypeface(tfNorm); t.setTextSize(20); t.setColor(SUB);
-            c.drawText(unit, x + vw + 5, y + 65, t);
+            c.drawText(unit, x + vw + 4, y + 66, t);
 
-            // Smooth 24h gradient sparkline
-            float sx = x, sy = y + 78, sw = w, sh = 108;
+            // Crisp 24h straight polyline + flat 14% fill matching server.py
+            float sx = x, sy = y + 73, sw = w, sh = 120;
             long t0 = now - 86_400_000L;
             List<float[]> xy = new ArrayList<>();
             for (SparkPt pt : pts) {
                 if (pt.t < t0) continue;
                 float px = sx + Math.max(0f, Math.min(1f, (pt.t - t0) / 86_400_000f)) * sw;
-                float py = sy + sh - 3 - Math.max(0f, Math.min(1f, (float) (pt.mean / topVal))) * (sh - 6);
+                float py = sy + sh - 2 - Math.max(0f, Math.min(1f, (float) (pt.mean / topVal))) * (sh - 4);
                 xy.add(new float[] {px, py});
             }
             if (cur != null) {
-                float py = sy + sh - 3 - Math.max(0f, Math.min(1f, (float) (cur / topVal))) * (sh - 6);
+                float py = sy + sh - 2 - Math.max(0f, Math.min(1f, (float) (cur / topVal))) * (sh - 4);
                 xy.add(new float[] {sx + sw, py});
             }
             if (xy.size() >= 2) {
@@ -557,39 +568,32 @@ final class ServerView extends FrameLayout {
                 sparkFill.moveTo(first[0], sy + sh);
                 sparkFill.lineTo(first[0], first[1]);
                 for (int i = 1; i < xy.size(); i++) {
-                    float[] prev = xy.get(i - 1);
                     float[] curr = xy.get(i);
-                    float mx = (prev[0] + curr[0]) * .5f;
-                    float my = (prev[1] + curr[1]) * .5f;
-                    sparkLine.quadTo(prev[0], prev[1], mx, my);
-                    sparkFill.quadTo(prev[0], prev[1], mx, my);
+                    sparkLine.lineTo(curr[0], curr[1]);
+                    sparkFill.lineTo(curr[0], curr[1]);
                 }
                 float[] last = xy.get(xy.size() - 1);
-                sparkLine.lineTo(last[0], last[1]);
-                sparkFill.lineTo(last[0], last[1]);
                 sparkFill.lineTo(last[0], sy + sh);
                 sparkFill.close();
 
                 p.setStyle(Paint.Style.FILL);
-                p.setShader(new LinearGradient(0, sy, 0, sy + sh,
-                    WetterLage.alpha(col, .28f), WetterLage.alpha(col, .0f), Shader.TileMode.CLAMP));
+                p.setColor(WetterLage.alpha(col, .14f));
                 c.drawPath(sparkFill, p);
-                p.setShader(null);
 
                 linie.setStrokeWidth(2.5f);
                 linie.setColor(col);
                 c.drawPath(sparkLine, linie);
 
                 p.setColor(col);
-                c.drawCircle(last[0], last[1], 4.2f, p);
+                c.drawCircle(last[0], last[1], 4f, p);
             }
 
             t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(SUB);
-            c.drawText(kuerzen(t, foot, w), x, y + 206, t);
+            c.drawText(kuerzen(t, foot, w), x, y + 208, t);
         }
 
         private void zeichneDienste(Canvas c) {
-            float x0 = 30, y0 = 94, totalW = W - 60, colGap = 36, h = H - y0 - 16;
+            float x0 = 30, y0 = 92, totalW = W - 60, colGap = 36, h = H - y0 - 26;
             float colW = (totalW - colGap) * .5f;
 
             if (guests.isEmpty()) {
@@ -603,11 +607,13 @@ final class ServerView extends FrameLayout {
             List<Guest> sorted = new ArrayList<>(guests);
             Collections.sort(sorted, (a, b) -> {
                 if (a.on != b.on) return a.on ? -1 : 1;
+                boolean aVm = "VM".equals(a.typ), bVm = "VM".equals(b.typ);
+                if (aVm != bVm) return aVm ? -1 : 1;
                 return a.name.compareToIgnoreCase(b.name);
             });
 
             int rows = (sorted.size() + 1) / 2;
-            float rh = Math.max(48f, Math.min(57f, (float) Math.floor(h / Math.max(1, rows))));
+            float rh = Math.max(36f, Math.min(57f, (float) Math.floor(460f / Math.max(1, rows))));
             float contentH = rows * rh;
             diensteMaxScroll = Math.max(0f, contentH - h);
             if (diensteScrollY > diensteMaxScroll) diensteScrollY = diensteMaxScroll;
@@ -633,32 +639,46 @@ final class ServerView extends FrameLayout {
                 p.setColor(WetterLage.alpha(g.on ? GREEN : OFF_COL, alpha));
                 c.drawCircle(gx + 5, gy + rh * .5f, 5, p);
 
-                float tx = gx + 18, bw = colW - 18;
+                float tx = gx + 20, bw = colW - 20;
                 float topY = gy + rh * .5f - 5;
 
-                // Right-aligned metrics
+                // Right-aligned metrics matching server.py:228-231
                 Double ramUsedGb = g.ramPct != null && g.ramMaxGb != null ? g.ramPct / 100.0 * g.ramMaxGb : null;
                 String cpuTxt = (g.on && g.cpu != null ? fmt(g.cpu, 1) + "% · " : "")
                     + (g.cores != null ? fmt(g.cores, 0) + (g.cores == 1.0 ? " Kern" : " Kerne") : "");
-                String ramTxt = "VM".equals(g.typ) ? fmtGb(g.ramMaxGb) + " res."
-                    : (g.on && ramUsedGb != null ? fmt(ramUsedGb, ramUsedGb < 10 ? 1 : 0) + "/" : "") + fmtGb(g.ramMaxGb);
-                String diskTxt = (g.diskUsedGb != null ? fmt(g.diskUsedGb, 0) + "/" : "") + fmtGb(g.diskMaxGb);
-                String meta = (cpuTxt.isEmpty() ? "" : cpuTxt + " · ") + ramTxt + " · " + diskTxt;
+                String ramTxt;
+                if ("VM".equals(g.typ)) {
+                    ramTxt = fmtGb(g.ramMaxGb) + " reserviert";
+                } else {
+                    String ruS = (g.on && ramUsedGb != null) ? fmtGb(ramUsedGb).replace(" GB", "") + "/" : "";
+                    ramTxt = ruS + fmtGb(g.ramMaxGb);
+                }
+                String diskMaxS = fmtGb(g.diskMaxGb);
+                String diskUsedS = "";
+                if (g.diskUsedGb != null && g.diskUsedGb > 0) {
+                    String du = fmtGb(g.diskUsedGb);
+                    String duU = du.length() >= 2 ? du.substring(du.length() - 2) : "";
+                    String dmU = diskMaxS.length() >= 2 ? diskMaxS.substring(diskMaxS.length() - 2) : "";
+                    diskUsedS = (duU.equals(dmU) && du.length() > 3 ? du.substring(0, du.length() - 3) : du) + "/";
+                }
+                String meta = (cpuTxt.isEmpty() ? "" : cpuTxt + "  ·  ") + ramTxt + "  ·  " + diskUsedS + diskMaxS;
 
-                t.setTypeface(tfNorm); t.setTextSize(11); t.setColor(WetterLage.alpha(0xFF6B7B8A, alpha));
+                t.setTypeface(tfNorm); t.setTextSize(11); t.setColor(WetterLage.alpha(0xFF56636F, alpha));
                 t.setTextAlign(Paint.Align.RIGHT);
                 float metaW = t.measureText(meta);
                 c.drawText(meta, gx + colW, topY, t);
                 t.setTextAlign(Paint.Align.LEFT);
 
-                // Name + type tag
+                // Name + type tag with guaranteed non-overlapping width
+                String tagTxt = g.typ + (g.on ? "" : " · aus");
+                float tagW = t.measureText(tagTxt);
                 t.setTypeface(tfNorm); t.setTextSize(15); t.setColor(WetterLage.alpha(TXT, alpha));
-                float maxNameW = Math.max(40f, bw - metaW - 44);
+                float maxNameW = Math.max(40f, bw - metaW - tagW - 18f);
                 String nm = kuerzen(t, g.name, maxNameW);
                 c.drawText(nm, tx, topY, t);
                 float nmW = t.measureText(nm);
                 t.setTypeface(tfNorm); t.setTextSize(11); t.setColor(WetterLage.alpha(0xFF56636F, alpha));
-                c.drawText(g.typ + (g.on ? "" : " · aus"), tx + nmW + 7, topY, t);
+                c.drawText(tagTxt, tx + nmW + 8f, topY, t);
 
                 // Combined CPU | RAM / Disk bars
                 float barY = topY + 8;

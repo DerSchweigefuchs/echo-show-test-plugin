@@ -80,6 +80,11 @@ final class TestAnsicht implements OverlayFactory {
         if (aktiv != null && aktiv.musikView != null) aktiv.musikView.setCover(url, scharf, weich);
     }
 
+    /** Main thread: karaoke offset pill toggle updated. */
+    void playerVersatzSetzen(boolean an) {
+        if (aktiv != null && aktiv.musikView != null) aktiv.musikView.setVersatzAn(an);
+    }
+
     /** Main thread: downloaded router QR fallback image arrived for GaesteWlanView. */
     void gaesteBildSetzen(String url, Bitmap bmp) {
         if (aktiv != null && aktiv.gaesteView != null) aktiv.gaesteView.setBild(url, bmp);
@@ -656,6 +661,7 @@ final class TestAnsicht implements OverlayFactory {
                 @Override public boolean pausiert() { return plugin.wetterPausiert(); }
             });
             inhalt.addView(musikView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            musikView.setVersatzAn(plugin.musikVersatzAn());
             if (m.ansichtDaten != null) musikFuellen();
         }
 

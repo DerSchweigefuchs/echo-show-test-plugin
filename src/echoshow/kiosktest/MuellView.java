@@ -10,7 +10,6 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
@@ -22,11 +21,11 @@ import java.util.Map;
 import me.jxl.kiosk.plugins.KsTheme;
 
 /**
- * Native full-screen Waste Collection view matching muell.py on the 963 x 584 dashboard grid (#121A21):
- * - Top-left back circle button, "Müllabfuhr" title + calendar name & bin count
- * - Left column: next 6 pickup days with custom tapered bin graphic (lid, handle, body, vertical ribs),
- *   Heute/Morgen colored highlight & border, "steht draußen ✓" pill, and tap-to-toggle via echo_show/muell/erledigt_setzen
- * - Right column: 5-week Mo–So mini calendar with ‹ Heute › (±28 days) paging, colored bin dots, and active bin legend.
+ * Native full-screen Waste Collection view matching muell.py 1:1 on the 963 x 584 dashboard grid (#121A21):
+ * - Top-left back circle button, "Müllabfuhr" title + calendar name & upcoming bin count
+ * - Left column: next 6 upcoming pickup days (cutoff 10:00 on pickup day, vorabend highlight, "steht draußen ✓",
+ *   40x40 / 22x22 rounded colored icon badges)
+ * - Right column: 5-week Mo–So mini calendar (0..+2 pages, month name only) + upcoming bin legend.
  */
 final class MuellView extends FrameLayout {
     static final float W = 963, H = 584;
@@ -85,12 +84,20 @@ final class MuellView extends FrameLayout {
     private boolean geladen;
     private boolean aktiv = true;
     private String fehler;
-    private String quelleName = "Müllkalender";
-    private final List<TonneDef> tonnenDefs = new ArrayList<>();
+    private String quelleName = "Müllabfuhr";
+    private int vorabendMin = 18 * 60;
     private final List<TagesGruppe> kommende = new ArrayList<>();
     private final Map<String, List<Abfuhr>> proTag = new LinkedHashMap<>();
-    private int kalenderOffset;   // -1 .. +3 in 28-day steps
-    private boolean toggleLaeuft;
+    private int kalenderOffset;   // 0 .. 2 in 28-day steps
+    private boolean angehaengt;
+
+    private final Runnable liveTick = new Runnable() {
+        @Override public void run() {
+            if (!angehaengt) return;
+            datenNachladen();
+            postDelayed(this, 60_000L);
+        }
+    };
 
     MuellView(Context ctx, KsTheme theme, Aktionen aktionen) {
         super(ctx);
@@ -100,6 +107,28 @@ final class MuellView extends FrameLayout {
         setClickable(true);
         canvasView = new CanvasView(ctx);
         addView(canvasView, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        angehaengt = true;
+        removeCallbacks(liveTick);
+        postDelayed(liveTick, 60_000L);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        angehaengt = false;
+        removeCallbacks(liveTick);
+        super.onDetachedFromWindow();
+    }
+
+    private void datenNachladen() {
+        if (aktionen == null || !angehaengt) return;
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "echo_show/muell/daten");
+        aktionen.ha(msg, (ok, data, err) -> post(() -> TestAnsicht.sicher(() -> {
+            if (ok && data != null) setDaten(data, null);
+        })));
     }
 
     void setDaten(Object haDaten, String err) {
@@ -112,25 +141,22 @@ final class MuellView extends FrameLayout {
             if (qn.isEmpty()) qn = str(m.get("quelle"));
             if (!qn.isEmpty()) quelleName = qn;
 
-            tonnenDefs.clear();
-            if (m.get("tonnen") instanceof List) {
-                for (Object o : (List<?>) m.get("tonnen")) {
-                    if (!(o instanceof Map)) continue;
-                    Map<?, ?> tm = (Map<?, ?>) o;
-                    String k = str(tm.get("key"));
-                    String n = str(tm.get("name"));
-                    int col = parseFarbe(str(tm.get("farbe")), 0xFF8FA3B5);
-                    String ic = str(tm.get("icon"));
-                    if (!n.isEmpty() || !k.isEmpty()) {
-                        tonnenDefs.add(new TonneDef(k.isEmpty() ? n : k, n.isEmpty() ? k : n, col, ic));
-                    }
-                }
+            String va = str(m.get("vorabend"));
+            if (va.matches("\\d{1,2}:\\d{2}")) {
+                String[] parts = va.split(":");
+                vorabendMin = Integer.parseInt(parts[0]) * 60 + Integer.parseInt(parts[1]);
+            } else {
+                vorabendMin = 18 * 60;
             }
 
             boolean globalDraussen = Boolean.TRUE.equals(m.get("draussen"));
             String erledigtDatum = str(m.get("erledigt_datum"));
             proTag.clear();
             List<Abfuhr> alle = new ArrayList<>();
+            Calendar nowCal = Calendar.getInstance();
+            String heute = Kalender.datumKey(nowCal);
+            int nowHour = nowCal.get(Calendar.HOUR_OF_DAY);
+
             if (m.get("termine") instanceof List) {
                 for (Object o : (List<?>) m.get("termine")) {
                     if (!(o instanceof Map)) continue;
@@ -138,12 +164,18 @@ final class MuellView extends FrameLayout {
                     String d = str(em.get("datum"));
                     if (d.length() > 10) d = d.substring(0, 10);
                     if (d.isEmpty()) continue;
+                    // Today drops off at 10:00 matching muell.py:81
+                    int cmp = d.compareTo(heute);
+                    if (cmp < 0 || (cmp == 0 && nowHour >= 10)) continue;
+
                     String typ = str(em.get("typ"));
                     String name = str(em.get("name"));
                     String titel = str(em.get("titel"));
                     if (name.isEmpty()) name = titel.isEmpty() ? "Sonstiges" : titel;
                     int col = parseFarbe(str(em.get("farbe")), 0xFF8FA3B5);
                     String ic = str(em.get("icon"));
+                    if (ic.isEmpty()) ic = "mdi:delete-outline";
+                    else if (!ic.startsWith("mdi:")) ic = "mdi:" + ic;
                     boolean erl = Boolean.TRUE.equals(em.get("erledigt")) || (globalDraussen && d.equals(erledigtDatum));
                     Abfuhr a = new Abfuhr(d, typ, name, col, ic, titel, erl);
                     alle.add(a);
@@ -152,7 +184,6 @@ final class MuellView extends FrameLayout {
                         dayList = new ArrayList<>();
                         proTag.put(d, dayList);
                     }
-                    // Deduplicate same type on same day
                     boolean dup = false;
                     for (Abfuhr ex : dayList) {
                         if (ex.typ.equals(a.typ) && ex.name.equals(a.name)) { dup = true; break; }
@@ -162,11 +193,9 @@ final class MuellView extends FrameLayout {
             }
 
             Collections.sort(alle, (x, y) -> x.datum.compareTo(y.datum));
-            String heute = Kalender.datumKey(Calendar.getInstance());
             kommende.clear();
             Map<String, TagesGruppe> grpMap = new LinkedHashMap<>();
             for (Abfuhr a : alle) {
-                if (a.datum.compareTo(heute) < 0) continue;
                 List<Abfuhr> dayList = proTag.get(a.datum);
                 if (dayList == null) continue;
                 TagesGruppe g = grpMap.get(a.datum);
@@ -179,33 +208,6 @@ final class MuellView extends FrameLayout {
             }
         }
         canvasView.invalidate();
-    }
-
-    private void erledigtUmschalten(TagesGruppe g) {
-        if (aktionen == null || toggleLaeuft || g == null) return;
-        final boolean neu = !g.istErledigt();
-        g.setErledigt(neu);
-        toggleLaeuft = true;
-        canvasView.invalidate();
-
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("type", "echo_show/muell/erledigt_setzen");
-        msg.put("datum", g.datum);
-        msg.put("erledigt", neu);
-        aktionen.ha(msg, (ok, data, err) -> post(() -> TestAnsicht.sicher(() -> {
-            toggleLaeuft = false;
-            if (!ok) {
-                g.setErledigt(!neu);
-                if (err != null) fehler = err;
-                canvasView.invalidate();
-                return;
-            }
-            Map<String, Object> req = new LinkedHashMap<>();
-            req.put("type", "echo_show/muell/daten");
-            aktionen.ha(req, (ok2, data2, err2) -> post(() -> TestAnsicht.sicher(() -> {
-                if (ok2 && data2 != null) setDaten(data2, null);
-            })));
-        })));
     }
 
     private static int parseFarbe(String hex, int fallback) {
@@ -232,7 +234,6 @@ final class MuellView extends FrameLayout {
         private final Typeface tfMed = Typeface.create("sans-serif-medium", Typeface.NORMAL);
         private final Typeface tfBold = Typeface.create("sans-serif", Typeface.BOLD);
         private final RectF rf = new RectF();
-        private final Path binPath = new Path();
         private final Path iconTmp = new Path();
         private float skala = 1f, dx, dy, downX, downY;
 
@@ -281,10 +282,9 @@ final class MuellView extends FrameLayout {
         }
 
         private List<TonneDef> aktiveLegende() {
-            if (!tonnenDefs.isEmpty()) return tonnenDefs;
             Map<String, TonneDef> seen = new LinkedHashMap<>();
-            for (List<Abfuhr> l : proTag.values()) {
-                for (Abfuhr a : l) {
+            for (TagesGruppe g : kommende) {
+                for (Abfuhr a : g.tonnen) {
                     String k = a.typ.isEmpty() ? a.name : a.typ;
                     if (!seen.containsKey(k)) seen.put(k, new TonneDef(k, a.name, a.farbe, a.icon));
                 }
@@ -294,18 +294,17 @@ final class MuellView extends FrameLayout {
 
         private void zeichneKopf(Canvas c, int tonnenAnz) {
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0x1EFFFFFF);
+            p.setColor(0x14FFFFFF);
             c.drawCircle(58, 50, 28, p);
-            drawIcon(c, "mdi:chevron-left", 45, 37, 26, TXT);
-            hits.add(new Hit("zurueck", 22, 14, 94, 86));
+            drawIcon(c, "mdi:chevron-left", 44, 36, 28, TXT);
+            hits.add(new Hit("zurueck", 30, 22, 86, 78));
 
             t.setTextAlign(Paint.Align.LEFT);
             t.setTypeface(tfMed); t.setTextSize(22); t.setColor(TXT);
             c.drawText("Müllabfuhr", 102, 44, t);
 
             t.setTypeface(tfNorm); t.setTextSize(14); t.setColor(SUB);
-            String sub = !geladen ? (fehler != null ? "Fehler: " + fehler : "Daten werden geladen …")
-                : quelleName + (tonnenAnz > 0 ? " · " + tonnenAnz + (tonnenAnz == 1 ? " Tonne" : " Tonnen") : "");
+            String sub = quelleName + (tonnenAnz > 0 ? " · " + tonnenAnz + (tonnenAnz == 1 ? " Tonne" : " Tonnen") : "");
             c.drawText(kuerzen(t, sub, 600), 102, 65, t);
         }
 
@@ -318,75 +317,71 @@ final class MuellView extends FrameLayout {
                 c.drawText(msg, x + 8, y + 40, t);
                 return;
             }
+            Calendar nowCal = Calendar.getInstance();
+            int nowHour = nowCal.get(Calendar.HOUR_OF_DAY);
+            int nowMin = nowHour * 60 + nowCal.get(Calendar.MINUTE);
+
             int count = Math.min(6, kommende.size());
-            float rowH = 68, gap = 8;
+            float rowH = 64, gap = 8;
             for (int i = 0; i < count; i++) {
                 TagesGruppe g = kommende.get(i);
                 Abfuhr prim = g.tonnen.get(0);
                 boolean istHeute = g.datum.equals(heute);
                 boolean istMorgen = g.datum.equals(morgen);
-                boolean akt = istHeute || istMorgen;
+                boolean akt = (i == 0) && (istHeute ? nowHour < 10 : (istMorgen && nowMin >= vorabendMin));
                 float ry = y + i * (rowH + gap);
 
                 rf.set(x, ry, x + w, ry + rowH);
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(akt ? WetterLage.alpha(prim.farbe, .20f) : BOX);
                 c.drawRoundRect(rf, 16, 16, p);
-                if (akt) {
-                    linie.setStrokeWidth(1.6f);
-                    linie.setColor(WetterLage.alpha(prim.farbe, .72f));
-                    c.drawRoundRect(rf, 16, 16, linie);
-                }
 
-                // Date column (weekday + relative/date)
+                // Date column (weekday 22px + sub-date 13px #8FA3B5)
                 Calendar dc = Kalender.tag(g.datum);
                 String wt = WT[dc.get(Calendar.DAY_OF_WEEK) - 1];
                 String subD = istHeute ? "heute" : (istMorgen ? "morgen"
                     : String.format(Locale.ROOT, "%02d.%02d.", dc.get(Calendar.DAY_OF_MONTH), dc.get(Calendar.MONTH) + 1));
-                t.setTypeface(tfMed); t.setTextSize(21); t.setColor(TXT);
-                c.drawText(wt, x + 16, ry + 32, t);
-                t.setTypeface(akt ? tfMed : tfNorm); t.setTextSize(13);
-                t.setColor(akt ? prim.farbe : SUB);
-                c.drawText(subD, x + 16, ry + 51, t);
+                t.setTypeface(tfMed); t.setTextSize(22); t.setColor(TXT);
+                c.drawText(wt, x + 16, ry + 31, t);
+                t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(SUB);
+                c.drawText(subD, x + 16, ry + 49, t);
 
-                // Tapered bin graphic
-                drawTonne(c, x + 78, ry + 13, 42, prim.farbe);
+                // 40x40 rounded square badge matching tonne(t, 40)
+                tonneBadge(c, x + 94, ry + 12, 40, 10, prim);
 
-                // Extra bin mini icons if multiple bins on same day
-                float rightStop = x + w - 14;
-                if (akt) {
-                    boolean dr = g.istErledigt();
-                    String pill = dr ? "steht draußen ✓" : "rausgestellt?";
-                    t.setTypeface(tfMed); t.setTextSize(12.5f);
-                    float pw = t.measureText(pill) + 20;
-                    float px = x + w - 12 - pw, py = ry + (rowH - 28) * .5f;
-                    rf.set(px, py, px + pw, py + 28);
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(dr ? 0x2E6CC483 : 0x12FFFFFF);
-                    c.drawRoundRect(rf, 14, 14, p);
-                    t.setColor(dr ? 0xFF8FDCA3 : SUB);
-                    c.drawText(pill, px + 10, py + 18.5f, t);
-                    rightStop = px - 8;
-                    hits.add(new Hit("toggle:" + i, x, ry, x + w, ry + rowH));
-                } else if (g.tonnen.size() > 1) {
-                    int extra = Math.min(3, g.tonnen.size() - 1);
-                    float ex = x + w - 14 - extra * 24;
-                    for (int k = 1; k <= extra; k++) {
-                        drawTonne(c, ex + (k - 1) * 24, ry + 22, 22, g.tonnen.get(k).farbe);
+                // Extra bin badges (22x22, 5px gap) + plain green "steht draußen ✓" if akt && draussen
+                float rightEdge = x + w - 16;
+                if (g.tonnen.size() > 1) {
+                    int extra = g.tonnen.size() - 1;
+                    float exStart = rightEdge - (extra * 22 + (extra - 1) * 5);
+                    for (int k = 1; k < g.tonnen.size(); k++) {
+                        tonneBadge(c, exStart + (k - 1) * 27, ry + 21, 22, 6, g.tonnen.get(k));
                     }
-                    rightStop = ex - 8;
+                    rightEdge = exStart - 10;
+                }
+                if (akt && g.istErledigt()) {
+                    t.setTypeface(tfNorm); t.setTextSize(13); t.setColor(0xFF8FDCA3);
+                    t.setTextAlign(Paint.Align.RIGHT);
+                    String drTxt = "steht draußen ✓";
+                    c.drawText(drTxt, rightEdge, ry + 36.5f, t);
+                    t.setTextAlign(Paint.Align.LEFT);
+                    rightEdge -= t.measureText(drTxt) + 10;
                 }
 
-                // Bin title
-                String label = prim.name;
-                if (akt && g.tonnen.size() > 1) {
-                    StringBuilder sb = new StringBuilder(prim.name);
-                    for (int k = 1; k < g.tonnen.size(); k++) sb.append(" + ").append(g.tonnen.get(k).name);
-                    label = sb.toString();
-                }
-                t.setTypeface(tfMed); t.setTextSize(18.5f); t.setColor(TXT);
-                c.drawText(kuerzen(t, label, Math.max(40, rightStop - (x + 132))), x + 132, ry + 41, t);
+                // Bin title (never concatenated with "+")
+                t.setTypeface(tfMed); t.setTextSize(19); t.setColor(TXT);
+                c.drawText(kuerzen(t, prim.name, Math.max(40, rightEdge - (x + 148))), x + 148, ry + 39, t);
             }
+        }
+
+        private void tonneBadge(Canvas c, float x, float y, float sz, float rad, Abfuhr a) {
+            rf.set(x, y, x + sz, y + sz);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(a.farbe);
+            c.drawRoundRect(rf, rad, rad, p);
+            float iconSz = Math.round(sz * 0.60f);
+            int iconCol = "gelb".equals(a.typ) ? 0xFF3A2E05 : 0xFFFFFFFF;
+            drawIcon(c, a.icon, x + (sz - iconSz) * 0.5f, y + (sz - iconSz) * 0.5f, iconSz, iconCol);
         }
 
         private void zeichneKalender(Canvas c, Calendar heuteCal, String heute, List<TonneDef> legende) {
@@ -401,26 +396,20 @@ final class MuellView extends FrameLayout {
             Calendar d1 = (Calendar) d0.clone();
             d1.add(Calendar.DAY_OF_MONTH, 34);
             String monat = d0.get(Calendar.MONTH) == d1.get(Calendar.MONTH)
-                ? MON[d0.get(Calendar.MONTH)] + " " + d0.get(Calendar.YEAR)
-                : MON[d0.get(Calendar.MONTH)] + " / " + MON[d1.get(Calendar.MONTH)] + " " + d1.get(Calendar.YEAR);
+                ? MON[d0.get(Calendar.MONTH)]
+                : MON[d0.get(Calendar.MONTH)] + " / " + MON[d1.get(Calendar.MONTH)];
 
-            // Header (< Monat > + Heute)
-            float hy = by + 16;
-            drawIcon(c, "mdi:chevron-left", bx + 16, hy, 24, kalenderOffset > -1 ? SUB : 0x4D8FA3B5);
-            hits.add(new Hit("cal:-1", bx + 8, hy - 6, bx + 48, hy + 30));
+            // Header (< Monat > — offset 0..2, no year, no Heute button)
+            float hy = by + 18;
+            drawIcon(c, "mdi:chevron-left", bx + 24, hy, 24, kalenderOffset > 0 ? SUB : 0x4D8FA3B5);
+            hits.add(new Hit("cal:-1", bx + 16, hy - 6, bx + 56, hy + 30));
 
             t.setTextAlign(Paint.Align.CENTER);
-            t.setTypeface(tfMed); t.setTextSize(16.5f); t.setColor(TXT);
+            t.setTypeface(tfMed); t.setTextSize(16); t.setColor(TXT);
             c.drawText(monat, bx + bw * .5f, hy + 18, t);
 
-            if (kalenderOffset != 0) {
-                t.setTypeface(tfMed); t.setTextSize(13); t.setColor(0xFF6FB3F2);
-                c.drawText("Heute", bx + bw - 68, hy + 17, t);
-                hits.add(new Hit("cal:0", bx + bw - 94, hy - 4, bx + bw - 42, hy + 28));
-            }
-
-            drawIcon(c, "mdi:chevron-right", bx + bw - 40, hy, 24, kalenderOffset < 3 ? SUB : 0x4D8FA3B5);
-            hits.add(new Hit("cal:1", bx + bw - 48, hy - 6, bx + bw - 8, hy + 30));
+            drawIcon(c, "mdi:chevron-right", bx + bw - 48, hy, 24, kalenderOffset < 2 ? SUB : 0x4D8FA3B5);
+            hits.add(new Hit("cal:1", bx + bw - 56, hy - 6, bx + bw - 16, hy + 30));
 
             // Weekday row
             float gx = bx + 16, gy = by + 56, gw = bw - 32, gap = 4;
@@ -433,7 +422,7 @@ final class MuellView extends FrameLayout {
 
             // 5 weeks = 35 cells
             Calendar cur = (Calendar) d0.clone();
-            float cellsY = gy + 22;
+            float cellsY = gy + 19;
             for (int k = 0; k < 35; k++) {
                 int row = k / 7, col = k % 7;
                 float cx = gx + col * (cw + gap), cy = cellsY + row * (ch + gap);
@@ -444,18 +433,20 @@ final class MuellView extends FrameLayout {
 
                 rf.set(cx, cy, cx + cw, cy + ch);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(isHeute ? 0x24FFFFFF : 0x08FFFFFF);
+                p.setColor(isHeute ? 0x21FFFFFF : WetterLage.alpha(0xFFFFFFFF, 0.03f * alpha));
                 c.drawRoundRect(rf, 10, 10, p);
+
+                List<Abfuhr> dayBins = proTag.get(dk);
+                boolean hatDots = dayBins != null && !dayBins.isEmpty();
 
                 t.setTypeface(isHeute ? tfBold : tfNorm);
                 t.setTextSize(14);
                 t.setColor(WetterLage.alpha(TXT, alpha));
-                c.drawText(String.valueOf(cur.get(Calendar.DAY_OF_MONTH)), cx + cw * .5f, cy + 23, t);
+                c.drawText(String.valueOf(cur.get(Calendar.DAY_OF_MONTH)), cx + cw * .5f, hatDots ? (cy + 23) : (cy + 33), t);
 
-                List<Abfuhr> dayBins = proTag.get(dk);
-                if (dayBins != null && !dayBins.isEmpty()) {
-                    int n = Math.min(4, dayBins.size());
-                    float dotR = 4.5f, dotGap = 3.5f;
+                if (hatDots) {
+                    int n = dayBins.size();
+                    float dotR = 4.5f, dotGap = 3f;
                     float totalW = n * (dotR * 2) + (n - 1) * dotGap;
                     float sx = cx + (cw - totalW) * .5f + dotR;
                     for (int i = 0; i < n; i++) {
@@ -467,13 +458,13 @@ final class MuellView extends FrameLayout {
             }
             t.setTextAlign(Paint.Align.LEFT);
 
-            // Legend at bottom
-            float lx = bx + 18, ly = cellsY + 5 * (ch + gap) + 18;
-            t.setTypeface(tfNorm); t.setTextSize(12.5f);
+            // Legend at bottom (13px, 6px dot gap, 14px item gap)
+            float lx = bx + 16, ly = cellsY + 5 * (ch + gap) + 14;
+            t.setTypeface(tfNorm); t.setTextSize(13);
             for (TonneDef td : legende) {
                 float tw = 16 + t.measureText(td.name) + 14;
                 if (lx + tw > bx + bw - 14) {
-                    lx = bx + 18;
+                    lx = bx + 16;
                     ly += 20;
                     if (ly > by + bh - 6) break;
                 }
@@ -481,48 +472,9 @@ final class MuellView extends FrameLayout {
                 p.setColor(td.farbe);
                 c.drawCircle(lx + 5, ly - 4, 5, p);
                 t.setColor(0xFFC3CCD5);
-                c.drawText(td.name, lx + 15, ly, t);
+                c.drawText(td.name, lx + 16, ly, t);
                 lx += tw;
             }
-        }
-
-        /** Draws a crisp tapered wheelie bin (handle, overhanging lid, tapered body, vertical ribs) in [x..x+sz, y..y+sz]. */
-        private void drawTonne(Canvas c, float x, float y, float sz, int farbe) {
-            c.save();
-            c.translate(x, y);
-            float s = sz / 24f;
-            c.scale(s, s);
-
-            // Handle at top
-            linie.setColor(farbe);
-            linie.setStrokeWidth(1.6f);
-            c.drawRoundRect(8.5f, 1.8f, 15.5f, 4.4f, 1.2f, 1.2f, linie);
-
-            // Overhanging lid
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(farbe);
-            c.drawRoundRect(3.2f, 4.2f, 20.8f, 7.2f, 1.5f, 1.5f, p);
-
-            // Tapered body
-            binPath.reset();
-            binPath.moveTo(4.6f, 7.8f);
-            binPath.lineTo(19.4f, 7.8f);
-            binPath.lineTo(17.7f, 21.4f);
-            binPath.quadTo(17.5f, 22.4f, 16.4f, 22.4f);
-            binPath.lineTo(7.6f, 22.4f);
-            binPath.quadTo(6.5f, 22.4f, 6.3f, 21.4f);
-            binPath.close();
-            c.drawPath(binPath, p);
-
-            // Lid shadow separator + vertical ribs
-            int ribCol = (farbe == 0xFFE8C23A) ? 0x553A2E05 : 0x55000000;
-            linie.setColor(ribCol);
-            linie.setStrokeWidth(1.1f);
-            c.drawLine(4.8f, 7.9f, 19.2f, 7.9f, linie);
-            c.drawLine(9.0f, 10.5f, 9.6f, 19.6f, linie);
-            c.drawLine(12.0f, 10.5f, 12.0f, 19.6f, linie);
-            c.drawLine(15.0f, 10.5f, 14.4f, 19.6f, linie);
-            c.restore();
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
@@ -530,7 +482,7 @@ final class MuellView extends FrameLayout {
                 int a = e.getActionMasked();
                 if (a == MotionEvent.ACTION_DOWN) {
                     downX = e.getX(); downY = e.getY();
-                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) < 30) {
+                } else if (a == MotionEvent.ACTION_UP && Math.hypot(e.getX() - downX, e.getY() - downY) <= 14f * skala) {
                     float vx = (e.getX() - dx) / skala, vy = (e.getY() - dy) / skala;
                     for (int i = hits.size() - 1; i >= 0; i--) {
                         Hit h = hits.get(i);
@@ -550,16 +502,10 @@ final class MuellView extends FrameLayout {
         private void ausfuehren(String id) {
             if ("zurueck".equals(id)) {
                 if (aktionen != null) aktionen.zurueck();
-            } else if ("cal:0".equals(id)) {
-                kalenderOffset = 0;
-                invalidate();
             } else if (id.startsWith("cal:")) {
                 int dir = Integer.parseInt(id.substring(4));
-                kalenderOffset = Math.max(-1, Math.min(3, kalenderOffset + dir));
+                kalenderOffset = Math.max(0, Math.min(2, kalenderOffset + dir));
                 invalidate();
-            } else if (id.startsWith("toggle:")) {
-                int idx = Integer.parseInt(id.substring(7));
-                if (idx >= 0 && idx < kommende.size()) erledigtUmschalten(kommende.get(idx));
             }
         }
 

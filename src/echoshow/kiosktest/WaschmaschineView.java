@@ -2,7 +2,6 @@ package echoshow.kiosktest;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RadialGradient;
@@ -24,12 +23,11 @@ import java.util.Map;
 import me.jxl.kiosk.plugins.KsTheme;
 
 /**
- * Native full-screen Washing Machine view matching wasch.py on the 963 x 584 dashboard grid (#0D1720):
+ * Native full-screen Washing Machine view matching wasch.py 1:1 on the 963 x 584 dashboard grid (#0D1720):
  * - Top-right Jetzt | Verlauf segmented toggle
  * - Jetzt tab: 230px ring (running % / green checkmark done / idle), remaining/end time, phase,
- *   power/duration metric cards, green "Ausgeraeumt" button (button.press), timeline & 24h usual hours bar strip
- * - Verlauf tab: < period > + Stunden | Tage | Wochen, stacked category bars + dashed average + tap tooltip,
- *   220px category summary ring with legend.
+ *   power/duration metric pills, green "Ausgeräumt" button (button.press), bottom timeline strip
+ * - Verlauf tab: < period > + Stunden | Tage | Wochen, stacked category bars, 220px category summary ring with legend.
  */
 final class WaschmaschineView extends FrameLayout {
     static final float W = 963f, H = 584f;
@@ -65,17 +63,6 @@ final class WaschmaschineView extends FrameLayout {
         boolean trifft(float x, float y) { return x >= l && x <= r && y >= t && y <= b; }
     }
 
-    private static final class BalkenInfo {
-        final float cx, topY;
-        final String titel, detail;
-        BalkenInfo(float cx, float topY, String titel, String detail) {
-            this.cx = cx;
-            this.topY = topY;
-            this.titel = titel;
-            this.detail = detail;
-        }
-    }
-
     private final KsTheme theme;
     private final Aktionen aktionen;
     private final CanvasView canvasView;
@@ -83,14 +70,13 @@ final class WaschmaschineView extends FrameLayout {
     private String tab = "jetzt";          // "jetzt" | "verlauf"
     private String verlaufModus = "d";     // "h" | "d" | "w"
     private int verlaufSeite;
-    private int tipIdx = -1;
+    private boolean angehaengt;
     private String fehler;
 
     // Parsed data from echo_show/waschmaschine/daten
     private boolean hatDaten;
     private String zustand = "unavailable";
     private long sinceMs;
-    private String programm = "";
     private String phase = "";
     private Double fortschritt;
     private String fertigUm = "";
@@ -104,9 +90,16 @@ final class WaschmaschineView extends FrameLayout {
     private Double leistung;
     private String entladen = "";
     private boolean entladenVerfuegbar;
-    private double kwh24h;
-    private final int[] profil24h = new int[24];
     private final List<Lauf> runs = new ArrayList<>();
+
+    private final Runnable refreshRun = this::datenNachladen;
+    private final Runnable liveTick = new Runnable() {
+        @Override public void run() {
+            if (!angehaengt) return;
+            datenNachladen();
+            postDelayed(this, 5000L);
+        }
+    };
 
     WaschmaschineView(Context ctx, KsTheme theme, String initTab, Aktionen aktionen) {
         super(ctx);
@@ -119,6 +112,30 @@ final class WaschmaschineView extends FrameLayout {
         addView(canvasView, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        angehaengt = true;
+        removeCallbacks(liveTick);
+        postDelayed(liveTick, 5000L);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        angehaengt = false;
+        removeCallbacks(liveTick);
+        removeCallbacks(refreshRun);
+        super.onDetachedFromWindow();
+    }
+
+    private void datenNachladen() {
+        if (aktionen == null || !angehaengt) return;
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "echo_show/waschmaschine/daten");
+        aktionen.ha(msg, (ok, data, err) -> post(() -> TestAnsicht.sicher(() -> {
+            if (ok && data != null) setDaten(data, null);
+            else if (err != null) setDaten(null, err);
+        })));
+    }
+
     void setDaten(Object haDaten, String fehler) {
         this.fehler = fehler;
         if (haDaten instanceof Map) {
@@ -127,7 +144,6 @@ final class WaschmaschineView extends FrameLayout {
             zustand = str(m.get("zustand"));
             if (zustand.isEmpty()) zustand = "unavailable";
             sinceMs = numLng(m.get("since_ms"), System.currentTimeMillis());
-            programm = str(m.get("programm"));
             phase = str(m.get("phase"));
             fortschritt = zahl(m.get("fortschritt"));
             fertigUm = str(m.get("fertig_um"));
@@ -141,16 +157,6 @@ final class WaschmaschineView extends FrameLayout {
             leistung = zahl(m.get("leistung"));
             entladen = str(m.get("entladen"));
             entladenVerfuegbar = Boolean.TRUE.equals(m.get("entladen_verfuegbar"));
-            kwh24h = numDbl(m.get("kwh_24h"), 0.0);
-
-            java.util.Arrays.fill(profil24h, 0);
-            if (m.get("profil_24h") instanceof List) {
-                List<?> pr = (List<?>) m.get("profil_24h");
-                for (int i = 0; i < 24 && i < pr.size(); i++) {
-                    Double v = zahl(pr.get(i));
-                    if (v != null) profil24h[i] = Math.max(0, (int) Math.round(v));
-                }
-            }
 
             runs.clear();
             if (m.get("runs") instanceof List) {
@@ -177,7 +183,7 @@ final class WaschmaschineView extends FrameLayout {
         if (!neu.equals(this.tab)) {
             this.tab = neu;
             if ("verlauf".equals(neu)) verlaufSeite = 0;
-            tipIdx = -1;
+            datenNachladen();
             canvasView.invalidate();
         }
     }
@@ -223,14 +229,20 @@ final class WaschmaschineView extends FrameLayout {
         tgt.put("entity_id", entladen);
         msg.put("target", tgt);
         try {
-            aktionen.ha(msg, (ok, data, err) -> {});
+            aktionen.ha(msg, (ok, data, err) -> {
+                if (ok) {
+                    post(() -> {
+                        removeCallbacks(refreshRun);
+                        postDelayed(refreshRun, 600L);
+                    });
+                }
+            });
         } catch (RuntimeException ignored) {}
     }
 
     private final class CanvasView extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint ringP = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint dashP = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint tPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Typeface tfLight = Typeface.create("sans-serif-light", Typeface.NORMAL);
         private final Typeface tfNorm = Typeface.create("sans-serif", Typeface.NORMAL);
@@ -239,10 +251,9 @@ final class WaschmaschineView extends FrameLayout {
         private final Path iconTmp = new Path();
         private final Map<String, Path> iconCache = new HashMap<>();
         private final List<Hit> hits = new ArrayList<>();
-        private final List<BalkenInfo> balkenInfos = new ArrayList<>();
 
-        private final Shader glowBlue = new RadialGradient(W * 0.17f, H * 0.52f, W * 0.46f, 0x296FB3F2, 0x006FB3F2, Shader.TileMode.CLAMP);
-        private final Shader glowGreen = new RadialGradient(W * 0.17f, H * 0.52f, W * 0.46f, 0x296CC483, 0x006CC483, Shader.TileMode.CLAMP);
+        private final Shader glowBlue = new RadialGradient(W * 0.17f, H * 0.52f, 393.3f, 0x296FB3F2, 0x006FB3F2, Shader.TileMode.CLAMP);
+        private final Shader glowGreen = new RadialGradient(W * 0.17f, H * 0.52f, 393.3f, 0x296CC483, 0x006CC483, Shader.TileMode.CLAMP);
 
         private float skala = 1f, dx, dy, downX, downY;
 
@@ -251,10 +262,6 @@ final class WaschmaschineView extends FrameLayout {
             setClickable(true);
             ringP.setStyle(Paint.Style.STROKE);
             ringP.setStrokeCap(Paint.Cap.ROUND);
-            dashP.setStyle(Paint.Style.STROKE);
-            dashP.setStrokeWidth(1.5f);
-            dashP.setColor(0x59FFFFFF);
-            dashP.setPathEffect(new DashPathEffect(new float[] {6f, 6f}, 0f));
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -265,7 +272,6 @@ final class WaschmaschineView extends FrameLayout {
             dx = (gw - W * skala) * 0.5f;
             dy = (gh - H * skala) * 0.5f;
             hits.clear();
-            balkenInfos.clear();
 
             c.drawColor(BG);
             c.save();
@@ -287,7 +293,7 @@ final class WaschmaschineView extends FrameLayout {
                     tPaint.setTypeface(tfNorm);
                     tPaint.setTextSize(18f);
                     tPaint.setColor(SUB);
-                    String msg = fehler != null ? "Fehler: " + fehler : "Daten werden geladen …";
+                    String msg = fehler != null ? "Fehler: " + fehler : ("verlauf".equals(tab) ? "Verlauf wird geladen …" : "Daten werden geladen …");
                     c.drawText(kuerzen(tPaint, msg, W - 80f), W * 0.5f, H * 0.52f, tPaint);
                     tPaint.setTextAlign(Paint.Align.LEFT);
                 } else if ("verlauf".equals(tab)) {
@@ -349,8 +355,8 @@ final class WaschmaschineView extends FrameLayout {
         }
 
         private void zeichneJetzt(Canvas c, String mk, long nowMs) {
-            // 230px ring at (36, 108) -> center (151, 223)
-            float cx = 151f, cy = 223f, dia = 230f, sw = 16f;
+            // 230px ring at (36, 110) -> center (151, 225) matching wasch.py
+            float cx = 151f, cy = 225f, dia = 230f, sw = 16f;
             double pct = fortschritt != null ? Math.max(0.0, Math.min(100.0, fortschritt)) : 0.0;
             if (fortschritt == null && restzeit != null && verstrichen != null && restzeit + verstrichen > 0) {
                 pct = verstrichen / (restzeit + verstrichen) * 100.0;
@@ -359,7 +365,8 @@ final class WaschmaschineView extends FrameLayout {
             List<float[]> segs = new ArrayList<>();
             if ("run".equals(mk)) segs.add(new float[] {(float) (pct / 100.0), col});
             else if ("done".equals(mk)) segs.add(new float[] {1f, GREEN});
-            zeichneRing(c, cx, cy, dia, sw, segs, 0x14FFFFFF);
+            int trackCol = ("idle".equals(mk) || "off".equals(mk)) ? 0x12FFFFFF : 0x14FFFFFF;
+            zeichneRing(c, cx, cy, dia, sw, segs, trackCol);
 
             if ("run".equals(mk)) {
                 String pTxt = String.valueOf(Math.round(pct));
@@ -374,14 +381,14 @@ final class WaschmaschineView extends FrameLayout {
                 c.drawText(pTxt, sx, cy + 16f, tPaint);
                 tPaint.setTextSize(22f);
                 tPaint.setColor(SUB);
-                c.drawText("%", sx + pw + 2f, cy + 14f, tPaint);
+                c.drawText("%", sx + pw + 2f, cy + 16f, tPaint);
             } else if ("done".equals(mk)) {
                 drawIcon(c, "mdi:check", cx - 38f, cy - 38f, 76f, GREEN);
             } else {
                 drawIcon(c, "mdi:washing-machine", cx - 42f, cy - 42f, 84f, SUB);
             }
 
-            // Hero text column (x = 304..670)
+            // Hero text column (x = 310, vertically centered around cy = 225 matching wasch.py)
             Lauf last = letzterLauf();
             List<Lauf> d14 = tage(14, 0);
             int n14 = d14.size();
@@ -391,7 +398,7 @@ final class WaschmaschineView extends FrameLayout {
 
             String small, bigMain, bigUnit = "", line;
             if ("run".equals(mk)) {
-                String phLbl = !phase.isEmpty() ? phase : (!programm.isEmpty() ? programm : modeLabel());
+                String phLbl = !phase.isEmpty() ? phase : modeLabel();
                 small = phLbl + (!startStr.isEmpty() ? " · seit " + startStr : (startMs > 0 ? " · seit " + fmtUhr(startMs) : ""));
                 if (restzeit == null) {
                     bigMain = modeLabel();
@@ -406,13 +413,7 @@ final class WaschmaschineView extends FrameLayout {
             } else if ("done".equals(mk)) {
                 long m = Math.max(0L, Math.round((nowMs - sinceMs) / 60_000.0));
                 small = "Fertig";
-                if (m < 60) {
-                    bigMain = "seit " + m;
-                    bigUnit = "min";
-                } else {
-                    bigMain = "seit " + fmtHm(m);
-                    bigUnit = "h";
-                }
+                bigMain = m < 60 ? "seit " + m + " min" : "seit " + fmtHm(m) + " h";
                 line = last != null
                     ? "Gelaufen " + fmtHm(last.m) + " h" + (last.k > 0.01 ? " · " + fmtKwh(last.k) + " kWh" : "")
                     : "Wäsche rausholen";
@@ -424,63 +425,61 @@ final class WaschmaschineView extends FrameLayout {
                     : "";
             }
 
-            float tx = 306f;
-            float maxHeroW = 395f;
+            float tx = 310f;
+            float maxHeroW = 430f;
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(19f);
             tPaint.setColor(SUB);
-            c.drawText(kuerzen(tPaint, small, maxHeroW), tx, 162f, tPaint);
+            c.drawText(small, tx, "run".equals(mk) ? 156f : 164f, tPaint);
 
             tPaint.setTypeface(tfLight);
-            tPaint.setTextSize("run".equals(mk) ? 94f : 62f);
+            tPaint.setTextSize("run".equals(mk) ? 104f : 66f);
             tPaint.setColor(TXT);
+            float bigBase = "run".equals(mk) ? 256f : 238f;
             float bw = tPaint.measureText(bigMain);
-            c.drawText(kuerzen(tPaint, bigMain, maxHeroW - (bigUnit.isEmpty() ? 0f : 64f)), tx, "run".equals(mk) ? 256f : 236f, tPaint);
+            c.drawText(kuerzen(tPaint, bigMain, maxHeroW - (bigUnit.isEmpty() ? 0f : 66f)), tx, bigBase, tPaint);
             if (!bigUnit.isEmpty()) {
-                tPaint.setTextSize(30f);
+                tPaint.setTextSize(32f);
                 tPaint.setColor(SUB);
-                c.drawText(bigUnit, tx + Math.min(bw, maxHeroW - 64f) + 10f, "run".equals(mk) ? 254f : 234f, tPaint);
+                c.drawText(bigUnit, tx + Math.min(bw, maxHeroW - 66f) + 10f, bigBase, tPaint);
             }
             if (!line.isEmpty()) {
                 tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(21f);
                 tPaint.setColor(col);
-                c.drawText(kuerzen(tPaint, line, maxHeroW), tx, "run".equals(mk) ? 292f : 276f, tPaint);
+                c.drawText(line, tx, "run".equals(mk) ? 292f : 276f, tPaint);
             }
 
-            // Right metric pills (top right of body)
+            // Right metric pills (top = 124, 180)
             if ("run".equals(mk)) {
                 String p1 = (leistung == null ? "–" : Math.round(leistung)) + " W";
                 String p2 = verstrichen != null ? fmtHm(verstrichen) + " h gelaufen" : "läuft";
-                drawMetricPill(c, "mdi:flash", p1, 933f, 118f);
-                drawMetricPill(c, "mdi:timer-outline", p2, 933f, 174f);
+                drawMetricPill(c, "mdi:flash", p1, 933f, 124f);
+                drawMetricPill(c, "mdi:timer-outline", p2, 933f, 180f);
             } else {
-                drawMetricPill(c, "mdi:washing-machine", n14 + " in 14 Tagen", 933f, 118f);
-                drawMetricPill(c, "mdi:clock-outline", "Ø " + (n14 > 0 ? fmtHm(avg14) : "–") + " h", 933f, 174f);
+                drawMetricPill(c, "mdi:washing-machine", n14 + " in 14 Tagen", 933f, 124f);
+                drawMetricPill(c, "mdi:clock-outline", "Ø " + (n14 > 0 ? fmtHm(avg14) : "–") + " h", 933f, 180f);
             }
 
-            // Green "✓ Ausgeräumt" button when done & available
+            // Green "✓ Ausgeräumt" button at right 30, top 250
             if ("done".equals(mk) && entladenVerfuegbar && !entladen.isEmpty()) {
                 String lbl = "Ausgeräumt";
                 tPaint.setTypeface(tfMed);
                 tPaint.setTextSize(17f);
-                float btnW = 16f + 26f + 10f + tPaint.measureText(lbl) + 22f;
-                float btnL = 933f - btnW, btnT = 244f, btnH = 52f;
+                float btnW = 16f + 30f + 10f + tPaint.measureText(lbl) + 22f;
+                float btnL = 933f - btnW, btnT = 250f, btnH = 52f;
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(0x2E6CC483);
                 rf.set(btnL, btnT, 933f, btnT + btnH);
                 c.drawRoundRect(rf, 26f, 26f, p);
-                drawIcon(c, "mdi:basket-check-outline", btnL + 16f, btnT + 13f, 26f, GREEN);
+                drawIcon(c, "mdi:basket-check-outline", btnL + 16f, btnT + 11f, 30f, GREEN);
                 tPaint.setColor(GREEN);
-                c.drawText(lbl, btnL + 52f, btnT + 32f, tPaint);
+                c.drawText(lbl, btnL + 56f, btnT + 32f, tPaint);
                 hits.add(new Hit("ausgeraeumt", "", btnL, btnT, 933f, btnT + btnH));
             }
 
-            // Timeline strip (y = 374..432)
-            zeichneTimeline(c, mk, pct, last, col, 40f, 384f, W - 80f);
-
-            // 24h usual hours bar strip (y = 468..558)
-            zeichneProfil24h(c, 40f, 476f, W - 80f, 82f);
+            // Bottom timeline strip (y = 502..558, track center 514) matching wasch.py:262-270
+            zeichneTimeline(c, mk, pct, last, col, nowMs, 40f, 502f, W - 80f);
         }
 
         private void drawMetricPill(Canvas c, String icon, String text, float rightX, float y) {
@@ -492,26 +491,32 @@ final class WaschmaschineView extends FrameLayout {
             p.setColor(0x12FFFFFF);
             rf.set(l, y, rightX, y + 44f);
             c.drawRoundRect(rf, 22f, 22f, p);
-            drawIcon(c, icon, l + 16f, y + 12f, 20f, SUB);
+            drawIcon(c, icon, l + 18f, y + 12f, 20f, SUB);
             tPaint.setColor(TXT);
-            c.drawText(text, l + 45f, y + 28f, tPaint);
+            c.drawText(text, l + 47f, y + 28f, tPaint);
         }
 
-        private void zeichneTimeline(Canvas c, String mk, double pct, Lauf last, int col, float x, float y, float w) {
+        private void zeichneTimeline(Canvas c, String mk, double pct, Lauf last, int col, long nowMs, float x, float y, float w) {
             long t0 = 0, t1 = 0;
             double tp = 1.0;
             String lab = "";
             boolean done = !"run".equals(mk);
-            if ("run".equals(mk) && startMs > 0 && endMs > startMs) {
-                t0 = startMs; t1 = endMs; tp = pct / 100.0;
-                lab = !phase.isEmpty() ? phase : "jetzt";
-            } else if (last != null) {
+            if ("run".equals(mk)) {
+                long sEst = startMs > 0 ? startMs : (verstrichen != null ? nowMs - Math.round(verstrichen * 60_000.0) : 0L);
+                long eEst = (endMs > sEst) ? endMs : (sEst > 0 && restzeit != null ? nowMs + Math.round(restzeit * 60_000.0) : 0L);
+                if (sEst > 0 && eEst > sEst) {
+                    t0 = sEst; t1 = eEst; tp = pct / 100.0;
+                    lab = !phase.isEmpty() ? phase : "jetzt";
+                }
+            }
+            if ((t0 <= 0 || t1 <= t0) && last != null) {
                 t0 = last.s; t1 = last.s + last.m * 60_000L; tp = 1.0;
                 lab = "Letzte Wäsche";
+                done = true;
             }
             if (t0 <= 0 || t1 <= t0) return;
 
-            float lineY = y + 10f;
+            float lineY = y + 12f;
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x1AFFFFFF);
             rf.set(x, lineY - 2f, x + w, lineY + 2f);
@@ -521,13 +526,13 @@ final class WaschmaschineView extends FrameLayout {
             rf.set(x, lineY - 2f, x + w * (float) tp, lineY + 2f);
             c.drawRoundRect(rf, 2f, 2f, p);
 
-            // Start & end dots
+            // Start & end dots (20px diameter -> r=10)
             p.setColor(col);
-            c.drawCircle(x, lineY, 9f, p);
+            c.drawCircle(x, lineY, 10f, p);
             p.setColor(done ? col : 0xFF2A3A48);
-            c.drawCircle(x + w, lineY, 9f, p);
+            c.drawCircle(x + w, lineY, 10f, p);
 
-            // Hour ticks
+            // Hour ticks (12px -> r=6)
             Calendar hc = Calendar.getInstance();
             hc.setTimeInMillis(t0);
             hc.set(Calendar.MINUTE, 0); hc.set(Calendar.SECOND, 0); hc.set(Calendar.MILLISECOND, 0);
@@ -536,131 +541,97 @@ final class WaschmaschineView extends FrameLayout {
                 if (f > 0.06f && f < 0.94f) {
                     float hx = x + w * f;
                     p.setColor(f <= tp ? col : 0xFF2A3A48);
-                    c.drawCircle(hx, lineY, 5.5f, p);
+                    c.drawCircle(hx, lineY, 6f, p);
                     tPaint.setTextAlign(Paint.Align.CENTER);
                     tPaint.setTypeface(tfNorm);
-                    tPaint.setTextSize(13.5f);
+                    tPaint.setTextSize(14f);
                     tPaint.setColor(SUB);
-                    c.drawText(fmtUhr(h), hx, y + 40f, tPaint);
+                    c.drawText(fmtUhr(h), hx, lineY + 34f, tPaint);
                 }
             }
 
             if (done) {
                 tPaint.setTextAlign(Paint.Align.CENTER);
                 tPaint.setTypeface(tfNorm);
-                tPaint.setTextSize(14f);
+                tPaint.setTextSize(15f);
                 tPaint.setColor(SUB);
-                c.drawText(lab, x + w * 0.5f, y - 10f, tPaint);
+                c.drawText(lab, x + w * 0.5f, lineY - 20f, tPaint);
             } else {
                 float mx = x + w * (float) tp;
                 p.setColor(BG);
-                c.drawCircle(mx, lineY, 15f, p);
+                c.drawCircle(mx, lineY, 16f, p);
                 ringP.setColor(TXT);
                 ringP.setStrokeWidth(4f);
-                c.drawCircle(mx, lineY, 13f, ringP);
+                c.drawCircle(mx, lineY, 14f, ringP);
                 tPaint.setTextAlign(Paint.Align.CENTER);
                 tPaint.setTypeface(tfNorm);
-                tPaint.setTextSize(14f);
+                tPaint.setTextSize(15f);
                 tPaint.setColor(TXT);
-                c.drawText(lab, mx, y - 16f, tPaint);
+                c.drawText(lab, mx, lineY - 22f, tPaint);
             }
 
             tPaint.setTextAlign(Paint.Align.LEFT);
             tPaint.setTypeface(tfNorm);
-            tPaint.setTextSize(14.5f);
+            tPaint.setTextSize(15f);
             tPaint.setColor(TXT);
-            c.drawText(fmtUhr(t0), x - 6f, y + 40f, tPaint);
+            c.drawText(fmtUhr(t0), x - 10f, lineY + 38f, tPaint);
             tPaint.setTextAlign(Paint.Align.RIGHT);
-            c.drawText(fmtUhr(t1), x + w + 6f, y + 40f, tPaint);
-            tPaint.setTextAlign(Paint.Align.LEFT);
-        }
-
-        private void zeichneProfil24h(Canvas c, float x, float y, float w, float h) {
-            tPaint.setTypeface(tfMed);
-            tPaint.setTextSize(12f);
-            tPaint.setColor(SUB);
-            c.drawText("ÜBLICHE WASCHZEITEN (24 H)", x, y + 10f, tPaint);
-
-            int maxP = 1;
-            for (int v : profil24h) if (v > maxP) maxP = v;
-            int nowH = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-            float gap = 5f, bw = (w - gap * 23f) / 24f;
-            float barTop = y + 18f, barBot = y + h - 18f, barMaxH = barBot - barTop;
-
-            for (int hr = 0; hr < 24; hr++) {
-                float bx = x + hr * (bw + gap);
-                int v = profil24h[hr];
-                float bh = v > 0 ? Math.max(6f, (v / (float) maxP) * barMaxH) : 4f;
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(v > 0 ? (hr == nowH ? BLUE : 0x806FB3F2) : (hr == nowH ? 0x45FFFFFF : 0x16FFFFFF));
-                rf.set(bx, barBot - bh, bx + bw, barBot);
-                c.drawRoundRect(rf, 4f, 4f, p);
-
-                if (hr % 3 == 0 || hr == nowH) {
-                    tPaint.setTextAlign(Paint.Align.CENTER);
-                    tPaint.setTypeface(hr == nowH ? tfMed : tfNorm);
-                    tPaint.setTextSize(12f);
-                    tPaint.setColor(hr == nowH ? TXT : SUB);
-                    c.drawText(String.valueOf(hr), bx + bw * 0.5f, y + h - 2f, tPaint);
-                }
-            }
+            c.drawText(fmtUhr(t1), x + w + 10f, lineY + 38f, tPaint);
             tPaint.setTextAlign(Paint.Align.LEFT);
         }
 
         private void zeichneVerlauf(Canvas c, long nowMs) {
-            if (runs.isEmpty()) {
-                // Still render period & mode switchers so user can switch or see empty state cleanly
-            }
             float leftX = 30f, leftW = 569f;   // 933 - 334 - 30 = 569
             float rightX = 643f, rightW = 290f;
 
-            // Mode switcher (Stunden | Tage | Wochen) at right = 599, top = 89
+            // Mode switcher (Stunden | Tage | Wochen): height 46, padding 4/18, gap 2
             String[] mKeys = {"h", "d", "w"};
             String[] mNames = {"Stunden", "Tage", "Wochen"};
             float[] mw = new float[3];
-            float mTot = 8f;
+            float mTot = 8f + 4f;
             tPaint.setTextSize(16f);
             for (int i = 0; i < 3; i++) {
                 tPaint.setTypeface(mKeys[i].equals(verlaufModus) ? tfMed : tfNorm);
-                mw[i] = tPaint.measureText(mNames[i]) + 32f;
+                mw[i] = tPaint.measureText(mNames[i]) + 36f;
                 mTot += mw[i];
             }
-            float mRight = leftX + leftW, mLeft = mRight - mTot, mTop = 89f, mH = 44f;
+            float mRight = leftX + leftW, mLeft = mRight - mTot, mTop = 89f, mH = 46f;
             p.setStyle(Paint.Style.FILL);
             p.setColor(0x12FFFFFF);
             rf.set(mLeft, mTop, mRight, mTop + mH);
-            c.drawRoundRect(rf, 22f, 22f, p);
+            c.drawRoundRect(rf, 23f, 23f, p);
             float mx = mLeft + 4f;
             for (int i = 0; i < 3; i++) {
                 boolean on = mKeys[i].equals(verlaufModus);
                 rf.set(mx, mTop + 4f, mx + mw[i], mTop + mH - 4f);
                 if (on) {
                     p.setColor(TXT);
-                    c.drawRoundRect(rf, 18f, 18f, p);
+                    c.drawRoundRect(rf, 19f, 19f, p);
                 }
                 tPaint.setTextAlign(Paint.Align.CENTER);
                 tPaint.setTypeface(on ? tfMed : tfNorm);
                 tPaint.setColor(on ? BG : SUB);
-                c.drawText(mNames[i], rf.centerX(), mTop + 28f, tPaint);
+                c.drawText(mNames[i], rf.centerX(), mTop + 29f, tPaint);
                 hits.add(new Hit("mode", mKeys[i], rf.left, mTop, rf.right, mTop + mH));
-                mx += mw[i];
+                mx += mw[i] + 2f;
             }
             tPaint.setTextAlign(Paint.Align.LEFT);
 
             int maxPg = maxPage(verlaufModus);
             if (verlaufSeite > maxPg) verlaufSeite = maxPg;
 
-            // < period > nav at leftX = 30, top = 91
+            // < period > nav: prev circle center (50, 112), range box x=82..278 (center 180), next circle center (298, 112)
             boolean canPrev = verlaufSeite < maxPg;
             boolean canNext = verlaufSeite > 0;
-            p.setColor(0x14FFFFFF);
-            c.drawCircle(leftX + 20f, 111f, 20f, p);
-            drawIcon(c, "mdi:chevron-left", leftX + 9f, 100f, 22f, WetterLage.alpha(TXT, canPrev ? 1f : 0.3f));
-            if (canPrev) hits.add(new Hit("page", "1", leftX, 90f, leftX + 44f, 132f));
+            p.setColor(WetterLage.alpha(0xFFFFFFFF, canPrev ? 0.08f : 0.08f * 0.3f));
+            c.drawCircle(leftX + 20f, 112f, 20f, p);
+            drawIcon(c, "mdi:chevron-left", leftX + 9f, 101f, 22f, WetterLage.alpha(TXT, canPrev ? 1f : 0.3f));
+            if (canPrev) hits.add(new Hit("page", "1", leftX, 92f, leftX + 44f, 132f));
 
-            c.drawCircle(leftX + 244f, 111f, 20f, p);
-            drawIcon(c, "mdi:chevron-right", leftX + 233f, 100f, 22f, WetterLage.alpha(TXT, canNext ? 1f : 0.3f));
-            if (canNext) hits.add(new Hit("page", "-1", leftX + 220f, 90f, leftX + 268f, 132f));
+            p.setColor(WetterLage.alpha(0xFFFFFFFF, canNext ? 0.08f : 0.08f * 0.3f));
+            c.drawCircle(298f, 112f, 20f, p);
+            drawIcon(c, "mdi:chevron-right", 287f, 101f, 22f, WetterLage.alpha(TXT, canNext ? 1f : 0.3f));
+            if (canNext) hits.add(new Hit("page", "-1", 276f, 92f, 320f, 132f));
 
             // Prepare data for selected mode
             long DAY = 86_400_000L, HOUR = 3_600_000L;
@@ -669,7 +640,7 @@ final class WaschmaschineView extends FrameLayout {
             List<float[]> segs = new ArrayList<>();
             List<Object[]> leg = new ArrayList<>();
 
-            float chartTop = 250f, chartBot = 526f, chartH = chartBot - chartTop;
+            float chartTop = 246f, chartBot = 518f, chartH = chartBot - chartTop;
             p.setColor(0x14FFFFFF);
             c.drawRect(leftX, chartBot + 10f, leftX + leftW, chartBot + 12f, p);
 
@@ -714,7 +685,8 @@ final class WaschmaschineView extends FrameLayout {
                         rf.set(bx, chartBot - 8f, bx + colW, chartBot);
                         c.drawRoundRect(rf, 4f, 4f, p);
                     } else {
-                        for (int j = dr.size() - 1; j >= 0; j--) {
+                        // Stack earliest run at bottom and latest run on top (matching slice().reverse() top-to-bottom)
+                        for (int j = 0; j < dr.size(); j++) {
                             Lauf r = dr.get(j);
                             float sh = Math.max(12f, (r.m / (float) maxMin) * (chartH * 0.86f));
                             p.setStyle(Paint.Style.FILL);
@@ -725,34 +697,17 @@ final class WaschmaschineView extends FrameLayout {
                         }
                         tPaint.setTextAlign(Paint.Align.CENTER);
                         tPaint.setTypeface(tfNorm);
-                        tPaint.setTextSize(12.5f);
+                        tPaint.setTextSize(13f);
                         tPaint.setColor(SUB);
                         c.drawText((dCoarse[i] ? "≈" : "") + fmtHm(dTot[i]), bx + colW * 0.5f, yCur - 2f, tPaint);
                     }
                     boolean today = verlaufSeite == 0 && i == 13;
                     tPaint.setTextAlign(Paint.Align.CENTER);
                     tPaint.setTypeface(today ? tfMed : tfNorm);
-                    tPaint.setTextSize(today ? 12.5f : 15f);
+                    tPaint.setTextSize(today ? 13f : 15f);
                     tPaint.setColor(today ? TXT : SUB);
                     Calendar dc = Calendar.getInstance(); dc.setTimeInMillis(dStart[i]);
                     c.drawText(today ? "Heute" : WD[dc.get(Calendar.DAY_OF_WEEK) - 1], bx + colW * 0.5f, chartBot + 34f, tPaint);
-
-                    double dk = 0; for (Lauf r : dr) dk += r.k;
-                    String tipT = today ? "Heute" : WDL[dc.get(Calendar.DAY_OF_WEEK) - 1] + " " + fmtDatum(dStart[i]);
-                    String tipD = dr.isEmpty() ? "Keine Wäsche" : dr.size() + (dr.size() == 1 ? " Wäsche · " : " Wäschen · ") + fmtHm(dTot[i]) + " h" + (dk > 0.01 ? " · " + fmtKwh(dk) + " kWh" : "");
-                    balkenInfos.add(new BalkenInfo(bx + colW * 0.5f, dr.isEmpty() ? chartBot - 16f : yCur, tipT, tipD));
-                    hits.add(new Hit("bar", String.valueOf(i), bx - 3f, chartTop, bx + colW + 3f, chartBot + 20f));
-                }
-                // Dashed average line (average duration of non-empty days or average per wash)
-                float avgDay = tot / 14f;
-                if (avgDay > 0) {
-                    float ay = chartBot - Math.min(chartH * 0.9f, (avgDay / (float) maxMin) * (chartH * 0.86f));
-                    c.drawLine(leftX, ay, leftX + leftW, ay, dashP);
-                    tPaint.setTextAlign(Paint.Align.RIGHT);
-                    tPaint.setTypeface(tfNorm);
-                    tPaint.setTextSize(11.5f);
-                    tPaint.setColor(0x99FFFFFF);
-                    c.drawText("Ø " + fmtHm(avgDay), leftX + leftW, ay - 4f, tPaint);
                 }
 
                 rng = fmtDatum(dStart[0]) + " – " + fmtDatum(dStart[13]);
@@ -793,7 +748,7 @@ final class WaschmaschineView extends FrameLayout {
                     for (Lauf r : wr) { n++; cc[cat(r.m)]++; }
                 }
                 float gap = 8f, colW = (leftW - gap * (cols - 1)) / cols;
-                float segH = Math.max(10f, (chartH * 0.86f) / maxN - 4f);
+                float segH = Math.max(10f, (chartH * 0.86f) / maxN);
                 int best = 0; long bt = 0;
                 for (int i = 0; i < cols; i++) {
                     float bx = leftX + i * (colW + gap);
@@ -806,7 +761,9 @@ final class WaschmaschineView extends FrameLayout {
                         rf.set(bx, chartBot - 8f, bx + colW, chartBot);
                         c.drawRoundRect(rf, 4f, 4f, p);
                     } else {
-                        for (Lauf r : wr) {
+                        // First run on top, last run at bottom (matching top-to-bottom wr.map())
+                        for (int j = wr.size() - 1; j >= 0; j--) {
+                            Lauf r = wr.get(j);
                             p.setStyle(Paint.Style.FILL);
                             p.setColor(CAT[cat(r.m)]);
                             rf.set(bx, yCur - segH, bx + colW, yCur);
@@ -833,21 +790,6 @@ final class WaschmaschineView extends FrameLayout {
                         tPaint.setColor(TXT);
                         c.drawText(MN[f.get(Calendar.MONTH)], bx + 6f, chartBot + 34f, tPaint);
                     }
-                    int wTotMin = 0; double wKwh = 0; for (Lauf r : wr) { wTotMin += r.m; wKwh += r.k; }
-                    balkenInfos.add(new BalkenInfo(bx + colW * 0.5f, wr.isEmpty() ? chartBot - 16f : yCur,
-                        "Woche ab " + fmtDatum(wkBounds.get(i)[0]),
-                        wr.isEmpty() ? "Keine Wäsche" : wr.size() + (wr.size() == 1 ? " Wäsche · " : " Wäschen · ") + fmtHm(wTotMin) + " h"));
-                    hits.add(new Hit("bar", String.valueOf(i), bx - 3f, chartTop, bx + colW + 3f, chartBot + 20f));
-                }
-                double avgWk = n / (double) cols;
-                if (avgWk > 0) {
-                    float ay = chartBot - (float) (avgWk * (segH + 4f));
-                    c.drawLine(leftX, ay, leftX + leftW, ay, dashP);
-                    tPaint.setTextAlign(Paint.Align.RIGHT);
-                    tPaint.setTypeface(tfNorm);
-                    tPaint.setTextSize(11.5f);
-                    tPaint.setColor(0x99FFFFFF);
-                    c.drawText("Ø " + String.format(Locale.GERMAN, "%.1f", avgWk), leftX + leftW, ay - 4f, tPaint);
                 }
 
                 rng = fmtDatum(start.getTimeInMillis()) + " – " + fmtDatum(end.getTimeInMillis());
@@ -868,7 +810,13 @@ final class WaschmaschineView extends FrameLayout {
                 long t1 = nowH.getTimeInMillis() + HOUR - verlaufSeite * DAY;
                 long t0 = t1 - 24 * HOUR;
                 List<Lauf> sel = new ArrayList<>();
-                for (Lauf r : runs) if (r.s + r.m * 60_000L > t0 && r.s < t1) sel.add(r);
+                boolean selCoarse = false;
+                for (Lauf r : runs) {
+                    if (r.s + r.m * 60_000L > t0 && r.s < t1) {
+                        sel.add(r);
+                        if (r.c) selCoarse = true;
+                    }
+                }
 
                 double[] hMin = new double[24];
                 int[] hCat = new int[24];
@@ -891,30 +839,22 @@ final class WaschmaschineView extends FrameLayout {
                     int hr = hc.get(Calendar.HOUR_OF_DAY);
                     boolean isNow = verlaufSeite == 0 && i == 23;
                     p.setStyle(Paint.Style.FILL);
-                    float topBar;
                     if (hMin[i] > 0 && hCat[i] >= 0) {
-                        float bh = Math.max(12f, (float) (Math.min(60.0, hMin[i]) / 60.0 * (chartH * 0.92f)));
+                        float bh = Math.max(chartH * 0.06f, (float) (Math.min(60.0, hMin[i]) / 60.0 * (chartH * 0.92f)));
                         p.setColor(CAT[hCat[i]]);
-                        topBar = chartBot - bh;
-                        rf.set(bx, topBar, bx + colW, chartBot);
+                        rf.set(bx, chartBot - bh, bx + colW, chartBot);
                         c.drawRoundRect(rf, 7f, 7f, p);
                     } else {
                         p.setColor(isNow ? 0x59FFFFFF : 0x14FFFFFF);
-                        topBar = chartBot - 6f;
-                        rf.set(bx, topBar, bx + colW, chartBot);
+                        rf.set(bx, chartBot - 6f, bx + colW, chartBot);
                         c.drawRoundRect(rf, 3f, 3f, p);
                     }
                     tPaint.setTextAlign(Paint.Align.CENTER);
                     tPaint.setTypeface(tfNorm);
-                    tPaint.setTextSize(13.5f);
+                    tPaint.setTextSize(14f);
                     tPaint.setColor(isNow ? TXT : SUB);
                     String lb = isNow ? "jetzt" : (hr % 3 == 0 ? String.valueOf(hr) : "");
                     if (!lb.isEmpty()) c.drawText(lb, bx + colW * 0.5f, chartBot + 34f, tPaint);
-
-                    balkenInfos.add(new BalkenInfo(bx + colW * 0.5f, topBar,
-                        fmtUhr(t0 + i * HOUR) + " Uhr",
-                        hMin[i] > 0 ? Math.round(hMin[i]) + " min gelaufen" : "Keine Aktivität"));
-                    hits.add(new Hit("bar", String.valueOf(i), bx - 2f, chartTop, bx + colW + 2f, chartBot + 20f));
                 }
                 double runM = 0, kwh = 0;
                 for (Lauf r : sel) {
@@ -925,7 +865,7 @@ final class WaschmaschineView extends FrameLayout {
                 rng = verlaufSeite == 0 ? "letzte 24 Stunden" : (WDL[weekdayIdx(t0)] + " " + fmtUhr(t0) + " – " + WDL[weekdayIdx(t1)] + " " + fmtUhr(t1));
                 headNum = String.valueOf(sel.size());
                 headTxt = (sel.size() == 1 ? "Wäsche" : "Wäschen") + " in 24 Stunden";
-                sub = "Balken = Minuten Laufzeit pro Stunde";
+                sub = "Balken = Minuten Laufzeit pro Stunde" + (selCoarse ? " · ≈ grob geschätzt" : "");
                 rc = new String[] {"Laufzeit", runM > 0 ? fmtHm(runM) : "–", "Stunden"};
                 for (int i = 0; i < Math.min(4, sel.size()); i++) {
                     Lauf r = sel.get(i);
@@ -935,12 +875,12 @@ final class WaschmaschineView extends FrameLayout {
                 note = kwh > 0.01 ? fmtKwh(kwh) + " kWh" : "";
             }
 
-            // Period label, headline & sub
+            // Period label, headline & sub (period centered at x = 180 matching left: 30+52, width: 196)
             tPaint.setTextAlign(Paint.Align.CENTER);
             tPaint.setTypeface(tfNorm);
-            tPaint.setTextSize(18f);
+            tPaint.setTextSize(19f);
             tPaint.setColor(TXT);
-            c.drawText(kuerzen(tPaint, rng, 176f), leftX + 132f, 117f, tPaint);
+            c.drawText(kuerzen(tPaint, rng, 192f), 180f, 118f, tPaint);
             tPaint.setTextAlign(Paint.Align.LEFT);
 
             tPaint.setTypeface(tfLight);
@@ -951,12 +891,12 @@ final class WaschmaschineView extends FrameLayout {
             tPaint.setTypeface(tfNorm);
             tPaint.setTextSize(19f);
             tPaint.setColor(SUB);
-            c.drawText(kuerzen(tPaint, headTxt, leftW - hnw - 16f), leftX + hnw + 12f, 196f, tPaint);
+            c.drawText(kuerzen(tPaint, headTxt, leftW - hnw - 16f), leftX + hnw + 12f, 198f, tPaint);
             tPaint.setTextSize(15f);
             c.drawText(kuerzen(tPaint, sub, leftW), leftX, 224f, tPaint);
 
-            // Right summary 220px ring
-            float rcx = rightX + rightW * 0.5f, rcy = 200f;
+            // Right summary 220px ring (cy = 202 matching 92 + 110)
+            float rcx = rightX + rightW * 0.5f, rcy = 202f;
             zeichneRing(c, rcx, rcy, 220f, 18f, segs, 0x14FFFFFF);
             tPaint.setTextAlign(Paint.Align.CENTER);
             tPaint.setTypeface(tfNorm);
@@ -974,7 +914,8 @@ final class WaschmaschineView extends FrameLayout {
             tPaint.setTextAlign(Paint.Align.LEFT);
 
             // Legend rows
-            float ly = 342f;
+            float ly = 351f;
+            tPaint.setFontFeatureSettings("tnum");
             for (Object[] row : leg) {
                 int dotCol = (Integer) row[0];
                 String lbl = (String) row[1];
@@ -994,36 +935,14 @@ final class WaschmaschineView extends FrameLayout {
                 }
                 ly += 30f;
             }
+            tPaint.setFontFeatureSettings(null);
             if (!note.isEmpty()) {
                 tPaint.setTextAlign(Paint.Align.CENTER);
                 tPaint.setTypeface(tfNorm);
                 tPaint.setTextSize(15f);
                 tPaint.setColor(SUB);
-                c.drawText(note, rightX + rightW * 0.5f, ly + 12f, tPaint);
+                c.drawText(note, rightX + rightW * 0.5f, ly + 8f, tPaint);
                 tPaint.setTextAlign(Paint.Align.LEFT);
-            }
-
-            // Tap tooltip
-            if (tipIdx >= 0 && tipIdx < balkenInfos.size()) {
-                BalkenInfo bi = balkenInfos.get(tipIdx);
-                tPaint.setTypeface(tfMed); tPaint.setTextSize(14f);
-                float w1 = tPaint.measureText(bi.titel);
-                tPaint.setTypeface(tfNorm); tPaint.setTextSize(13f);
-                float w2 = tPaint.measureText(bi.detail);
-                float tw = Math.max(w1, w2) + 28f, th = 54f;
-                float tx = Math.max(leftX, Math.min(leftX + leftW - tw, bi.cx - tw * 0.5f));
-                float ty = Math.max(chartTop - 16f, bi.topY - th - 10f);
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0xF01A2631);
-                rf.set(tx, ty, tx + tw, ty + th);
-                c.drawRoundRect(rf, 12f, 12f, p);
-                ringP.setStrokeWidth(1.2f);
-                ringP.setColor(0x33FFFFFF);
-                c.drawRoundRect(rf, 12f, 12f, ringP);
-                tPaint.setTypeface(tfMed); tPaint.setTextSize(14f); tPaint.setColor(TXT);
-                c.drawText(bi.titel, tx + 14f, ty + 22f, tPaint);
-                tPaint.setTypeface(tfNorm); tPaint.setTextSize(13f); tPaint.setColor(SUB);
-                c.drawText(bi.detail, tx + 14f, ty + 42f, tPaint);
             }
         }
 
@@ -1041,11 +960,11 @@ final class WaschmaschineView extends FrameLayout {
             for (float[] seg : segs) {
                 float frac = seg[0];
                 int col = (int) seg[1];
-                if (frac <= 0.002f) continue;
+                if (frac <= 0f) continue;
                 double arcPx = Math.max(0.0, frac * circum - gapPx);
                 float startDeg = (float) (-90.0 + (offsetPx + gapPx * 0.5) / circum * 360.0);
                 float sweepDeg = (float) (arcPx / circum * 360.0);
-                if (sweepDeg > 0.5f) {
+                if (sweepDeg > 0.1f) {
                     ringP.setColor(col);
                     c.drawArc(rf, startDeg, sweepDeg, false, ringP);
                 }
@@ -1089,7 +1008,6 @@ final class WaschmaschineView extends FrameLayout {
                             return true;
                         }
                     }
-                    if (tipIdx >= 0) { tipIdx = -1; invalidate(); }
                 }
             } catch (RuntimeException ignored) {}
             return true;
@@ -1112,18 +1030,11 @@ final class WaschmaschineView extends FrameLayout {
                     if (!verlaufModus.equals(h.arg)) {
                         verlaufModus = h.arg;
                         verlaufSeite = 0;
-                        tipIdx = -1;
                         invalidate();
                     }
                     break;
                 case "page":
                     verlaufSeite = Math.max(0, Math.min(maxPage(verlaufModus), verlaufSeite + Integer.parseInt(h.arg)));
-                    tipIdx = -1;
-                    invalidate();
-                    break;
-                case "bar":
-                    int idx = Integer.parseInt(h.arg);
-                    tipIdx = (tipIdx == idx) ? -1 : idx;
                     invalidate();
                     break;
             }
