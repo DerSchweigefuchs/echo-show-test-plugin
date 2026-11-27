@@ -37,7 +37,7 @@ final class MorgenDaten {
     }
 
     static final class Segment {
-        String id = "", art = "", text = "";
+        String id = "", art = "", text = "", titel = "";
         String label = "", kategorie = "", thema = "", naechstes = "";
         int gruppe, gruppeI, gruppeN = 1;
         double t0, dauer, jetzt;
@@ -265,6 +265,7 @@ final class MorgenDaten {
             seg.id = str(sm.get("id"));
             seg.art = str(sm.get("art"));
             seg.text = str(sm.get("text"));
+            seg.titel = str(sm.get("titel"));
             seg.label = str(sm.get("label"));
             seg.kategorie = str(sm.get("kategorie"));
             seg.thema = str(sm.get("thema"));

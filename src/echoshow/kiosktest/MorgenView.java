@@ -229,6 +229,7 @@ final class MorgenView extends FrameLayout {
             linie.setStyle(Paint.Style.STROKE);
             linie.setStrokeCap(Paint.Cap.ROUND);
             linie.setStrokeJoin(Paint.Join.ROUND);
+            karActP.setShadowLayer(12f, 0f, 0f, 0x8CFFFFFF);
         }
 
         void setWetter(WetterLage.Daten wd) {
@@ -701,17 +702,18 @@ final class MorgenView extends FrameLayout {
             float mainW = hatRechts ? 636 : (W - 76);
 
             float textY = 122;
-            if (it != null && !it.t.isEmpty()) {
-                // Compact sky-blue headline (up to 2 lines)
+            String artTitel = (it != null && !it.t.isEmpty()) ? it.t : (seg.titel != null ? seg.titel : "");
+            if (!artTitel.isEmpty()) {
+                // Prominent article headline (up to 2 lines)
                 txt.setTextAlign(Paint.Align.LEFT);
-                txt.setTypeface(tfMed); txt.setTextSize(19);
-                txt.setColor("eil".equals(status.art) ? 0xFFFF9A92 : 0xFFA8CEF0);
-                float endY = zeichneMehrzeilig(c, it.t, txt, 38, 122, mainW, 25, 2);
+                txt.setTypeface(tfMed); txt.setTextSize(22.5f);
+                txt.setColor("eil".equals(status.art) ? 0xFFFF9A92 : 0xFFFFFFFF);
+                float endY = zeichneMehrzeilig(c, artTitel, txt, 38, 122, mainW, 28, 2);
 
                 // Source-colored accent bar
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(status.quelleFarbe(it.q));
-                rf.set(38, endY + 12, 86, endY + 15.5f);
+                p.setColor(it != null ? status.quelleFarbe(it.q) : 0xFF6FB3F2);
+                rf.set(38, endY + 12, 86, endY + 15f);
                 c.drawRoundRect(rf, 2, 2, p);
                 textY = endY + 34;
             }
@@ -947,17 +949,13 @@ final class MorgenView extends FrameLayout {
                     karP.setColor(0xEEFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karP);
                 } else if (i == aktivIdx) {
-                    float aw = karActP.measureText(wo.text);
-                    p.setStyle(Paint.Style.FILL); p.setColor(0x306FB3F2);
-                    rf.set(x + wo.x - 4, y + wo.y - neuScroll, x + wo.x + aw + 4, y + wo.y - neuScroll + layout.zeilenHoehe - 3);
-                    c.drawRoundRect(rf, 6, 6, p);
-                    karActP.setColor(0xFF9ED0FF);
+                    karActP.setColor(0xFFFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karActP);
                 } else if (wo.ende <= curChar) {
-                    karP.setColor(0xF0FFFFFF);
+                    karP.setColor(0xDCFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karP);
                 } else {
-                    karP.setColor(0x6CFFFFFF);
+                    karP.setColor(0x5AFFFFFF);
                     c.drawText(wo.text, x + wo.x, wy, karP);
                 }
             }
