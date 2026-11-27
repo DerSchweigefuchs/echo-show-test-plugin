@@ -283,6 +283,7 @@ final class ServerView extends FrameLayout {
         private final RectF rf = new RectF();
         private final Path sparkLine = new Path();
         private final Path sparkFill = new Path();
+        private final Path barClip = new Path();
         private final Path iconTmp = new Path();
         private float skala = 1f, dx, dy, downX, downY, lastY;
         private boolean ziehend;
@@ -662,9 +663,16 @@ final class ServerView extends FrameLayout {
                 // Combined CPU | RAM / Disk bars
                 float barY = topY + 8;
                 float halfW = (bw - 2) * .5f;
+                int trackCol = WetterLage.alpha(0xFFFFFFFF, 0.07f * alpha);
+
+                c.save();
+                barClip.reset();
+                rf.set(tx, barY, tx + bw, barY + 16f);
+                barClip.addRoundRect(rf, 5f, 5f, Path.Direction.CW);
+                c.clipPath(barClip);
 
                 // CPU bar
-                p.setColor(WetterLage.alpha(0x12FFFFFF, alpha));
+                p.setColor(trackCol);
                 c.drawRect(tx, barY, tx + halfW, barY + 7, p);
                 if (g.on) {
                     float wPct = Math.max(2f, Math.min(100f, g.cpu == null ? 0f : g.cpu.floatValue()));
@@ -674,13 +682,12 @@ final class ServerView extends FrameLayout {
 
                 // RAM bar (hatched for VM reserved, solid for LXC)
                 float rx = tx + halfW + 2;
-                p.setColor(WetterLage.alpha(0x12FFFFFF, alpha));
+                p.setColor(trackCol);
                 c.drawRect(rx, barY, rx + halfW, barY + 7, p);
                 if (g.on) {
                     if ("VM".equals(g.typ)) {
-                        p.setShader(schraffur.getShader());
-                        c.drawRect(rx, barY, rx + halfW, barY + 7, p);
-                        p.setShader(null);
+                        schraffur.setAlpha(Math.round(255f * alpha));
+                        c.drawRect(rx, barY, rx + halfW, barY + 7, schraffur);
                     } else {
                         float rPct = Math.max(2f, Math.min(100f, g.ramPct == null ? 0f : g.ramPct.floatValue()));
                         p.setColor(WetterLage.alpha(RAM_COL, alpha));
@@ -690,13 +697,14 @@ final class ServerView extends FrameLayout {
 
                 // Disk bar (full width below)
                 float dyBar = barY + 9;
-                p.setColor(WetterLage.alpha(0x12FFFFFF, alpha));
+                p.setColor(trackCol);
                 c.drawRect(tx, dyBar, tx + bw, dyBar + 7, p);
-                if (g.diskUsedGb != null && g.diskMaxGb != null && g.diskMaxGb > 0) {
+                if (g.diskUsedGb != null && g.diskUsedGb > 0 && g.diskMaxGb != null && g.diskMaxGb > 0) {
                     float dPct = Math.max(2f, Math.min(100f, (float) (g.diskUsedGb / g.diskMaxGb * 100.0)));
                     p.setColor(WetterLage.alpha(DISK_COL, alpha));
                     c.drawRect(tx, dyBar, tx + bw * (dPct / 100f), dyBar + 7, p);
                 }
+                c.restore();
             }
             c.restore();
         }

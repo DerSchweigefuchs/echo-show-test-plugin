@@ -99,6 +99,47 @@ final class MusikDaten {
 
     private MusikDaten() {}
 
+    /**
+     * Compact render_template subscription watching all non-excluded media_player entities and active music helpers
+     * while the native Music Player view is open, so track/state/volume/group/lyrics changes trigger an immediate reload.
+     */
+    static Map<String, Object> liveAbo(String ausschlussCsv, String helperEntity) {
+        StringBuilder ex = new StringBuilder("[");
+        if (ausschlussCsv != null && !ausschlussCsv.trim().isEmpty()) {
+            boolean first = true;
+            for (String raw : ausschlussCsv.split("[,;\\s]+")) {
+                String id = raw.trim();
+                if (!id.matches("[a-z0-9_]+\\.[a-z0-9_]{1,250}")) continue;
+                if (!first) ex.append(',');
+                ex.append('\'').append(id).append('\'');
+                first = false;
+            }
+        }
+        ex.append(']');
+        String selHelper = (helperEntity != null && helperEntity.trim().matches("[a-z0-9_]+\\.[a-z0-9_]{1,250}"))
+            ? helperEntity.trim() : "input_text.musik_player";
+        String tpl = "{%- set excl = " + ex + " -%}"
+            + "{%- set ns = namespace(l=[states('" + selHelper + "'),"
+            + "states('input_boolean.musik_liedtext'),"
+            + "states('input_boolean.musik_autoplay'),"
+            + "states('input_boolean.musik_crossfade'),"
+            + "states('input_text.musik_liedtext_vorlauf_geraete'),"
+            + "states('input_text.musik_geraete')]) -%}"
+            + "{%- for p in states.media_player -%}"
+            + "{%- if p.entity_id not in excl and p.state != 'unavailable' -%}"
+            + "{%- set ns.l = ns.l + [p.entity_id ~ ':' ~ p.state ~ ':' ~ (p.attributes.media_title | default('')) ~ ':'"
+            + " ~ (p.attributes.media_artist | default('')) ~ ':' ~ (p.attributes.media_album_name | default('')) ~ ':'"
+            + " ~ (p.attributes.entity_picture | default(p.attributes.entity_picture_local | default(''))) ~ ':'"
+            + " ~ (p.attributes.volume_level | default('')) ~ ':' ~ (p.attributes.media_position | default('')) ~ ':'"
+            + " ~ (p.attributes.media_position_updated_at | default('')) ~ ':' ~ (p.attributes.group_members | default([]) | join(','))] -%}"
+            + "{%- endif -%}{%- endfor -%}"
+            + "{{ ns.l | join('|') }}";
+        Map<String, Object> msg = new LinkedHashMap<>();
+        msg.put("type", "render_template");
+        msg.put("template", tpl);
+        return msg;
+    }
+
     static Zustand lesen(Object data, long nowMs) {
         Zustand z = new Zustand();
         z.empfangenMs = nowMs;

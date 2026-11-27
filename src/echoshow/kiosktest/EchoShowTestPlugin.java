@@ -53,6 +53,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     static final String NEWS = "news_abo";
     static final String TIMER = "timer_abo";
     static final String KONFIG_ABO = "echo_show_changed";
+    static final String MUSIK_ABO = "musik_live";
     private static final String[] ANSICHTEN = {
         "kalender", "timer", "anwesenheit", "wetter", "schoner", "morgen",
         "player", "waschmaschine", "gaeste-wlan", "einkaufsliste", "muell", "server"
@@ -88,6 +89,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     // live HA panel config (echo_show/plugin/konfig + echo_show_changed)
     private volatile Map<?, ?> konfigDaten;
     private volatile String haWetterEntity = "", haWetterName = "", haPersonen = "alle", haMusikAusschluss = "";
+    private volatile String haMusikHelper = "input_text.musik_player";
     private volatile List<String> haSzeneOrte;
     private volatile String haSzeneWechsel = "taeglich", haSzeneFest = "";
     private volatile boolean haSzeneSterne = true, haSzeneNamen = true, haSzeneBlitze = true, haSzeneFigur = true, haSzeneTiere = true;
@@ -174,6 +176,9 @@ public final class EchoShowTestPlugin implements KioskPlugin {
     private final Dauerabo aboNews = new Dauerabo(NEWS, zeit, melder);
     private final Dauerabo aboTimer = new Dauerabo(TIMER, zeit, melder);
     private final Dauerabo aboChanged = new Dauerabo(KONFIG_ABO, zeit, melder);
+    private final Dauerabo aboMusik = new Dauerabo(MUSIK_ABO, zeit, melder);
+    private String letzterMusikStand = "";
+    private final Runnable musikNachladenDebounced = () -> TestAnsicht.sicher(this::playerDatenNachladen);
     private volatile String aboStatus = "Abo aus";
     private volatile boolean aboFehler;
 
@@ -275,6 +280,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         else if (("ks.ha.subscription." + NEWS).equals(event)) newsEreignis(payload);
         else if (("ks.ha.subscription." + TIMER).equals(event)) timerEreignis(payload);
         else if (("ks.ha.subscription." + KONFIG_ABO).equals(event)) changedEreignis(payload);
+        else if (("ks.ha.subscription." + MUSIK_ABO).equals(event)) musikEreignis(payload);
         else if ("ks.screensaver.state".equals(event) || "ks.screen.state".equals(event)) {
             if ("ks.screensaver.state".equals(event)) {
                 schonerEventDa = true;
@@ -288,6 +294,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         }
         else if ("overlay.closed".equals(event) && OVERLAY.equals(payload.get("key"))) {
             synchronized (this) { aktuell = null; }   // back gesture; the view's onDestroy records the result
+            musikAboAbgleichen();
         }
     }
 
@@ -305,8 +312,13 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         aboNews.stop();
         aboTimer.stop();
         aboChanged.stop();
+        aboMusik.stop();
+        letzterMusikStand = "";
         morgenAutoOffen = false;
-        if (main != null) main.removeCallbacks(morgenAutoZu);
+        if (main != null) {
+            main.removeCallbacks(morgenAutoZu);
+            main.removeCallbacks(musikNachladenDebounced);
+        }
         synchronized (bildLock) {
             for (Bitmap[] pair : bildCache.values()) {
                 if (pair != null) {
@@ -456,6 +468,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                 m.tDaten = SystemClock.uptimeMillis();
             }   // otherwise wetterEreignis fills it in as soon as HA sends the first result
         }
+        musikAboAbgleichen();
         try {
             if (!"schoner".equals(ansicht) && (schonerAktiv || bildschirmAus)) {
                 bildschirmAufwecken(h);
@@ -551,6 +564,48 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             m.datenFehler = "haCall: " + e.getMessage();
             main().post(() -> TestAnsicht.sicher(a::datenDa));
         }
+    }
+
+    /** Reloads Music Player data if the player view is currently open. */
+    void playerDatenNachladen() {
+        TestAnsicht a;
+        synchronized (this) { a = aktuell != null && "player".equals(aktuell.m.ansicht) ? aktuell : null; }
+        if (a != null) ansichtDatenLaden(a, wsMsg("echo_show/musik/daten", "dashboard", dashboard));
+    }
+
+    /** Subscribes to live media_player + helper changes only while the native Music Player view is open. */
+    private void musikAboAbgleichen() {
+        PluginHost h = host;
+        if (h == null) return;
+        boolean offen;
+        synchronized (this) { offen = !h.isHeadless() && aktuell != null && "player".equals(aktuell.m.ansicht); }
+        if (!offen) {
+            letzterMusikStand = "";
+            if (main != null) main.removeCallbacks(musikNachladenDebounced);
+            aboMusik.setzen(h, null, null);
+            return;
+        }
+        String excl = schonerMusikAusschluss;
+        if (!haMusikAusschluss.isEmpty()) excl = excl.isEmpty() ? haMusikAusschluss : excl + "," + haMusikAusschluss;
+        Map<String, Object> msg = MusikDaten.liveAbo(excl, haMusikHelper);
+        aboMusik.setzen(h, msg, (String) msg.get("template"));
+    }
+
+    private void musikEreignis(Map<String, Object> p) {
+        if (!"event".equals(p.get("type"))) {
+            aboMusik.ereignis(p);
+            return;
+        }
+        Object evObj = p.get("event");
+        if (!(evObj instanceof Map)) return;
+        Map<?, ?> ev = (Map<?, ?>) evObj;
+        if (!ev.containsKey("result")) return;
+        Object raw = ev.get("result");
+        String stand = raw == null ? "" : String.valueOf(raw);
+        if (stand.equals(letzterMusikStand)) return;
+        letzterMusikStand = stand;
+        main().removeCallbacks(musikNachladenDebounced);
+        main().postDelayed(musikNachladenDebounced, 180L);
     }
 
     /** Loads shopping list config (from cached plugin/konfig or HA) + purchase history (echo_show/einkauf/verlauf). */
@@ -918,15 +973,23 @@ public final class EchoShowTestPlugin implements KioskPlugin {
         haPersonen = neuPersonen;
 
         String neuMusikExcl = "";
+        String neuMusikHelper = "input_text.musik_player";
         if (cfg.get("musik") instanceof Map) {
-            neuMusikExcl = joinCsv(((Map<?, ?>) cfg.get("musik")).get("nie_anbieten"));
+            Map<?, ?> mu = (Map<?, ?>) cfg.get("musik");
+            neuMusikExcl = joinCsv(mu.get("nie_anbieten"));
+            if (mu.get("helper") instanceof String && !((String) mu.get("helper")).trim().isEmpty()) {
+                neuMusikHelper = ((String) mu.get("helper")).trim();
+            }
         }
         boolean musikExclGeaendert = !neuMusikExcl.equals(haMusikAusschluss);
+        boolean musikHelperGeaendert = !neuMusikHelper.equals(haMusikHelper);
         haMusikAusschluss = neuMusikExcl;
+        haMusikHelper = neuMusikHelper;
 
         if (wetterGeaendert && wetterEntity.isEmpty()) wetterAbgleichen();
         if (personenGeaendert) personenAbgleichen();
         if (musikExclGeaendert) schonerAbgleichen();
+        if (musikExclGeaendert || musikHelperGeaendert) musikAboAbgleichen();
         WetterLage.Daten wd = wetterDaten;
         if (wd != null) WetterView.vorwaermen(wd, effektiverOrt(), haSzeneFigur, haSzeneTiere);
         konfigPushAnOffene();
@@ -1652,6 +1715,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
                     sz.get("cpu_fehler") != null ? ", " + sz.get("cpu_fehler") : ""));
             }
         }
+        musikAboAbgleichen();
         if (!m.geschlossenGemeldet) {
             m.geschlossenGemeldet = true;
             meldenStatus(m, "geschlossen", geschlossenDaten(m));
@@ -1667,6 +1731,7 @@ public final class EchoShowTestPlugin implements KioskPlugin {
             a = aktuell;
             aktuell = null;
         }
+        musikAboAbgleichen();
         if (a != null && !a.m.geschlossenGemeldet) {
             a.m.geschlossenGemeldet = true;
             meldenStatus(a.m, "geschlossen", geschlossenDaten(a.m));

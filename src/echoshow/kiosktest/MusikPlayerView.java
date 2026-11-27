@@ -46,6 +46,7 @@ final class MusikPlayerView extends FrameLayout {
         void zurueck();
         void ha(Map<String, Object> msg, Antwort cb);
         void coverLaden(String url);
+        void nachladen();
         boolean pausiert();
     }
 
@@ -99,17 +100,46 @@ final class MusikPlayerView extends FrameLayout {
 
     private boolean ziehendSeek;
     private double seekDragPos;
+    private long letztesNachladenMs;
+
+    private final Runnable nachladenRun = this::triggerNachladen;
+
+    private void triggerNachladen() {
+        TestAnsicht.sicher(() -> {
+            if (aktionen != null) {
+                letztesNachladenMs = System.currentTimeMillis();
+                aktionen.nachladen();
+            }
+        });
+    }
 
     private final Runnable tick1s = new Runnable() {
         @Override public void run() {
             TestAnsicht.sicher(() -> {
                 if (aktionen == null || !aktionen.pausiert()) {
                     canvasView.invalidate();
+                    if (aktionen != null) {
+                        MusikDaten.Player pl = daten.aktuellerPlayer();
+                        long now = System.currentTimeMillis();
+                        boolean endeErreicht = pl != null && pl.istLive() && pl.duration > 0
+                            && pl.aktuellePosition(now) >= pl.duration - 0.5 && now - letztesNachladenMs >= 3000L;
+                        boolean sicherheitsNetz = daten.empfangenMs > 0 && now - daten.empfangenMs >= 10_000L
+                            && now - letztesNachladenMs >= 10_000L;
+                        if (endeErreicht || sicherheitsNetz) {
+                            letztesNachladenMs = now;
+                            aktionen.nachladen();
+                        }
+                    }
                 }
             });
             mainHandler.postDelayed(this, 1000L);
         }
     };
+
+    private void baldNachladen(long delayMs) {
+        mainHandler.removeCallbacks(nachladenRun);
+        mainHandler.postDelayed(nachladenRun, delayMs);
+    }
 
     MusikPlayerView(Context ctx, KsTheme theme, Aktionen aktionen) {
         super(ctx);
@@ -127,9 +157,14 @@ final class MusikPlayerView extends FrameLayout {
         daten = neu;
         lyricsAn = neu.liedtextAn;
         MusikDaten.Player pl = neu.aktuellerPlayer();
-        if (pl != null && !pl.picture.isEmpty() && !pl.picture.equals(coverAngefordert)) {
+        if (pl == null || pl.picture.isEmpty()) {
+            coverAngefordert = "";
+        } else if (!pl.picture.equals(coverAngefordert)) {
             coverAngefordert = pl.picture;
             if (aktionen != null) aktionen.coverLaden(pl.picture);
+        }
+        if (pl == null || !pl.istLive()) {
+            if (!lyricsAn) lyricsKey = "";
         }
         pruefeLiedtext(pl);
         canvasView.schleife();
@@ -137,7 +172,9 @@ final class MusikPlayerView extends FrameLayout {
     }
 
     void setCover(String url, Bitmap scharf, Bitmap weich) {
-        coverUrl = url == null ? "" : url;
+        String u = url == null ? "" : url;
+        if (!coverAngefordert.isEmpty() && !u.equals(coverAngefordert)) return;
+        coverUrl = u;
         coverScharf = scharf;
         coverWeich = weich != null ? weich : scharf;
         canvasView.invalidate();
@@ -156,6 +193,7 @@ final class MusikPlayerView extends FrameLayout {
 
     @Override protected void onDetachedFromWindow() {
         mainHandler.removeCallbacks(tick1s);
+        mainHandler.removeCallbacks(nachladenRun);
         super.onDetachedFromWindow();
     }
 
@@ -202,7 +240,9 @@ final class MusikPlayerView extends FrameLayout {
             msg.put("service_data", data);
         }
         try {
-            aktionen.ha(msg, (ok, resp, err) -> {});
+            aktionen.ha(msg, (ok, resp, err) -> {
+                if (ok) mainHandler.post(() -> baldNachladen(450L));
+            });
         } catch (RuntimeException ignored) {}
     }
 
@@ -230,6 +270,7 @@ final class MusikPlayerView extends FrameLayout {
             if (aktionen != null) aktionen.coverLaden(pl.picture);
         }
         pruefeLiedtext(pl);
+        baldNachladen(700L);
         canvasView.invalidate();
     }
 

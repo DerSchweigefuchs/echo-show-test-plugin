@@ -650,6 +650,9 @@ final class TestAnsicht implements OverlayFactory {
                 @Override public void coverLaden(String url) {
                     plugin.playerCoverLaden(url);
                 }
+                @Override public void nachladen() {
+                    plugin.playerDatenNachladen();
+                }
                 @Override public boolean pausiert() { return plugin.wetterPausiert(); }
             });
             inhalt.addView(musikView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
